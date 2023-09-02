@@ -29,7 +29,7 @@ the end result using the xtractors on a PS4 system looks something like this:<br
 
 # WiKi
 
-- <a href="https://github.com/lmirel/mfc/wiki">Wiki</a>
+- <a href="https://github.com/ehmotion/eh-mfc/wiki">Wiki</a>
 
 <br>Tested on a system using Raspberry PI2/3.
 <br><br>
