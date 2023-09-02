@@ -35,13 +35,40 @@ modification history
 
 #define DEBUG 0
 #define debug_print(fmt, ...) \
+            do { if (DEBUG) fprintf(stdout, fmt, __VA_ARGS__); if (DEBUG) fflush (stdout);} while (0)
+#define debug_error(fmt, ...) \
             do { if (DEBUG) fprintf(stderr, fmt, __VA_ARGS__); if (DEBUG) fflush (stderr);} while (0)
+
+#define log_print(fmt, ...) \
+            do { fprintf(stdout, fmt, __VA_ARGS__); fflush (stdout);} while (0)
+#define log_error(fmt, ...) \
+            do { fprintf(stderr, fmt, __VA_ARGS__); fflush (stderr);} while (0)
+
+#include <sched.h>
+#include <stdio.h>
+
+int set_max_prio ()
+{
+  /*
+   * Set highest priority & scheduler policy.
+   */
+  struct sched_param p =
+  { .sched_priority = sched_get_priority_max(SCHED_FIFO) };
+
+  if( sched_setscheduler(0, SCHED_FIFO, &p) < 0 )
+  {
+    perror("sched_setscheduler");
+    return -1;
+  }
+  return 0;
+}
 
 /*
  * broadcast socket work
  */
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
 #include <arpa/inet.h>
 
 int inet_aton(const char *cp, struct in_addr *inp);
@@ -80,6 +107,15 @@ static int mfc_pkt[MFC_PKTSIZE] = {0};
 
 static int mfc_bcast_sock = -1;
 struct sockaddr_in mfc_si_other, si_me;
+struct in_addr mfc_si_mcast;
+struct ip_mreq
+{
+  struct in_addr imr_multiaddr; /* IP multicast group
+                                                address */
+  struct in_addr imr_address;   /* IP address of local
+                                                interface */
+  int imr_ifindex;              /* interface index */
+};
 //
 int mfc_bcast_prep (char *dst, int svr)
 {
@@ -89,7 +125,7 @@ int mfc_bcast_prep (char *dst, int svr)
   int s = -1;
   if ((s = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
   {
-    printf ("\n#ERR:socket");
+    log_print ("\n#ERR:socket", 0);
     return 0;
   }
 #if 0
@@ -99,38 +135,80 @@ int mfc_bcast_prep (char *dst, int svr)
 #endif
   if (svr)
   {
-    memset ((char *) &si_me, 0, sizeof(si_me));
+    int sopt = 1;
+    //SO_REUSEADDR
+#if 1
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &sopt, sizeof(sopt)) < 0)
+    {
+      log_print("\n#WARN:sockopt SO_REUSEADDR", 0);
+    }
+    //else
+      //fprintf(stderr, "\n#i:sockopt SO_REUSEADDR");
+#endif
+#if 1
+    if (setsockopt(s, SOL_SOCKET, IP_MULTICAST_LOOP, &sopt, sizeof(sopt)) < 0)
+    {
+      log_print("\n#WARN:sockopt IP_MULTICAST_LOOP", 0);
+    }
+    //else
+      //fprintf(stderr, "\n#i:sockopt IP_MULTICAST_LOOP");
+#endif
+#if 0
+    //SO_REUSEPORT
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &sopt, sizeof(sopt)) < 0)
+    {
+      fprintf(stderr, "\n#WARN:sockopt SO_REUSEPORT");
+    }
+    else
+      fprintf(stderr, "\n#i:sockopt SO_REUSEPORT");
+#endif
+#define MCASTADDR "224.0.0.1"
+    memset ((char *)&si_me, 0, sizeof(si_me));
     si_me.sin_family = AF_INET;
     si_me.sin_port = htons (MFCSVR_PORT);
-    si_me.sin_addr.s_addr = htonl (INADDR_ANY);
+    si_me.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind (s, (struct sockaddr*)&si_me, sizeof (si_me)) == -1)
     {
-      fprintf(stderr, "\n#ERR:bind");
+      log_print("\n#ERR:bind", 0);
       close (s);
-      return 0;
+      return -1;
     }
+    struct ip_mreq group;
+    memset((char *)&group, 0, sizeof(group));
+    group.imr_multiaddr.s_addr = inet_addr(MCASTADDR);
+    group.imr_address.s_addr = inet_addr(dst);
+    if (setsockopt(s, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&group, sizeof(group)) < 0)
+    {
+      log_print ("\n#ERR:IP_ADD_MEMBERSHIP on <%s> errno 0x%x (%s)", dst, errno, strerror(errno));
+      close(s);
+      return -1;
+    }
+    //else
+      //fprintf (stderr, "\n#i:sockopt IP_ADD_MEMBERSHIP");
   }
   else
   {
     //destination
-    memset((char *) &mfc_si_other, 0, sizeof (mfc_si_other));
+    memset ((char *) &mfc_si_other, 0, sizeof (mfc_si_other));
     mfc_si_other.sin_family = AF_INET;
     mfc_si_other.sin_port = htons (MFCSVR_PORT);
-  #if 1
-    mfc_si_other.sin_addr.s_addr = inet_addr (dst); //htonl (INADDR_BROADCAST);
+    mfc_si_other.sin_addr.s_addr = inet_addr(MCASTADDR); //htonl (INADDR_BROADCAST);
     if (mfc_si_other.sin_addr.s_addr == -1)
     {
-      close (s);
-      return 0;
+      log_print ("\n#ERR:wrong mcast address %s", MCASTADDR);
+      close(s);
+      return -1;
     }
-  #else
-    if (inet_aton(dst, &mfc_si_other.sin_addr) == 0)
+    memset((char *)&mfc_si_mcast, 0, sizeof(mfc_si_mcast));
+    mfc_si_mcast.s_addr = inet_addr(dst);
+    if (setsockopt (s, IPPROTO_IP, IP_MULTICAST_IF, (char *)&mfc_si_mcast, sizeof(mfc_si_mcast)) < 0)
     {
-      fprintf(stderr, "\n#!inet_aton() failed\n");
-      close (s);
-      return 0;
+      log_print("\n#ERR:IP_MULTICAST_IF on <%s> errno 0x%x (%s)", dst, errno, strerror(errno));
+      close(s);
+      return -1;
     }
-  #endif
+    //else
+      //fprintf (stderr, "\n#i:sockopt IP_MULTICAST_IF");
   }
   mfc_bcast_sock = s;
   mfc_pkt[0] = PKTT_CTRL;
@@ -145,11 +223,11 @@ int mfc_bcast_send ()
   {
     bs = sendto (mfc_bcast_sock, &mfc_pkt, mfc_bcast_pktlen (), 0, (struct sockaddr*)&mfc_si_other, sizeof(mfc_si_other));
     if (bs < 0)
-      printf("\n#ERR:sendto");
+      log_error("\n#ERR:sendto", 0);
     else
       debug_print ("\n#i:%d<%dB sent", mfc_bcast_sock, bs);
   }
-  fflush (stdout);
+  //fflush (stdout);
   return bs;
 }
 
@@ -168,7 +246,7 @@ int mfc_bcast_receive ()
       rtmo--;
     else
     {
-      printf ("\n#E:recvfrom() failed");
+      log_print ("\n#E:recvfrom() failed", 0);
       break;
     }
   }
@@ -243,7 +321,7 @@ int mfcdash_bcast_prep (char *dst, int svr)
   int s = -1;
   if ((s = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
   {
-    printf ("\n#ERR:socket");
+    log_print ("\n#ERR:socket", 0);
     return 0;
   }
 #if 0
@@ -259,7 +337,7 @@ int mfcdash_bcast_prep (char *dst, int svr)
     sidash_me.sin_addr.s_addr = htonl (INADDR_ANY);
     if (bind (s, (struct sockaddr*)&sidash_me, sizeof (sidash_me)) == -1)
     {
-      fprintf(stderr, "\n#ERR:bind");
+      log_print("\n#ERR:bind", 0);
       close (s);
       return 0;
     }
@@ -299,11 +377,11 @@ int mfcdash_bcast_send ()
   {
     bs = sendto (mfcdash_bcast_sock, &mfcdash_pkt, mfcdash_bcast_pktlen (), 0, (struct sockaddr*)&mfcdash_si_other, sizeof(mfcdash_si_other));
     if (bs < 0)
-      printf("\n#ERR:sendto");
+      log_print("\n#ERR:sendto", 0);
     else
       debug_print ("\n#i:%d<%dB sent", mfcdash_bcast_sock, bs);
   }
-  fflush (stdout);
+  //fflush (stdout);
   return bs;
 }
 
@@ -322,7 +400,7 @@ int mfcdash_bcast_receive ()
       rtmo--;
     else
     {
-      printf ("\n#E:recvfrom() failed");
+      log_print ("\n#E:recvfrom() failed", 0);
       break;
     }
   }
@@ -364,7 +442,7 @@ void bcast_prep (char *dst)
   int s;
   if ((s = socket (AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
   {
-    printf ("\n#ERR:socket");
+    log_print ("\n#ERR:socket", 0);
     return;
   }
 #if 0
@@ -378,7 +456,7 @@ void bcast_prep (char *dst)
   si_me.sin_addr.s_addr = htonl (INADDR_ANY);
   if (bind (s, (struct sockaddr*)&si_me, sizeof (si_me)) == -1)
   {
-    fprintf(stderr, "\n#ERR:bind");
+    log_print("\n#ERR:bind", 0);
     close (s);
     return;
   }
@@ -395,7 +473,7 @@ void bcast_prep (char *dst)
 #else
   if (inet_aton(dst, &si_other.sin_addr) == 0)
   {
-    fprintf(stderr, "\n#!inet_aton() failed\n");
+    log_print("\n#!inet_aton() failed", 0);
     close (s);
     return;
   }
@@ -660,4 +738,192 @@ unsigned int dtime_ms ()
   unsigned long ms = cms - lms;
   lms = cms;
   return (unsigned int)ms;
+}
+
+#include <limits.h>
+#include <termios.h>
+int serial_dash_open(char *_dashport, int spd)
+{
+    char tbuf[PATH_MAX];
+    struct termios options;
+    int _dashportfd = -1;
+    //open using realpath() symlink to actual /dev/ttyUSBx
+    if (realpath (_dashport, tbuf))
+      _dashportfd = open (tbuf, O_RDWR | O_NOCTTY | O_NONBLOCK);
+    if (_dashportfd == -1)
+    {
+      printf ("\n#E:serial dash not found on %s", tbuf);
+      //_dashport = NULL;
+      return _dashportfd;
+    }
+    //set options
+    tcgetattr (_dashportfd, &options);
+    //
+    cfsetispeed (&options, spd);
+    cfsetospeed (&options, spd);
+    cfmakeraw (&options);
+    //
+    if (tcsetattr (_dashportfd, TCSANOW, &options) < 0)
+    {
+      printf ("\n#E:cannot set options for MFCxDOF adapter %s", tbuf);
+      close (_dashportfd);
+      _dashportfd = -1;
+      //_dashport = NULL;
+    }
+    printf("\n#i:connected to serial dash '%s', on %d", tbuf, _dashportfd);
+    return _dashportfd;
+}
+
+/*
+simdash serial custom protocol
+
+hex bytes
+ArqSerial - proto
+|-----|
+| 01  | hdr fixed
+| 01  | hdr fixed
+| PID | packet id: 0..127 or 255
+| LEN | length: 1..32 w/o header and w/o 1B CRC
+| D00 |
+| D01 |
+| ..  |
+| DLL |
+| CRC | CRC8 from: PID+LEN+D00..DLL
+//PID
+nextpacketid = Arq_LastValidPacket > 127 ? 0 : Arq_LastValidPacket + 1;
+//CRC
+currentCrc = updateCrc(currentCrc, packetID);
+currentCrc = updateCrc(currentCrc, length);
+for (i = 0; i < length; i++) {
+    currentCrc = updateCrc(currentCrc, partialdatabuffer[i]);
+}
+
+SimHubArduino serial - proto
+|-----|
+| 03  | hdr fixed
+| CMD | command, see below: P - custom proto
+| S00 |
+| S01 |
+| ..  |
+
+//
+void Command_CustomProtocolData() {
+	shCustomProtocol.read();
+	FlowSerialWrite(0x15);
+}
+//
+	shCustomProtocol.loop();
+
+	// Wait for data
+	if (FlowSerialAvailable() > 0) {
+		if (FlowSerialTimedRead() == MESSAGE_HEADER)
+		{
+			lastSerialActivity = millis();
+			// Read command
+			loop_opt = FlowSerialTimedRead();
+
+			if (loop_opt == '1') Command_Hello();
+			else if (loop_opt == '8') Command_SetBaudrate();
+			else if (loop_opt == 'J') Command_ButtonsCount();
+			else if (loop_opt == '2') Command_TM1638Count();
+			else if (loop_opt == 'B') Command_SimpleModulesCount();
+			else if (loop_opt == 'A') Command_Acq();
+			else if (loop_opt == 'N') Command_DeviceName();
+			else if (loop_opt == 'I') Command_UniqueId();
+			else if (loop_opt == '0') Command_Features();
+			else if (loop_opt == '3') Command_TM1638Data();
+			else if (loop_opt == 'V') Command_Motors();
+			else if (loop_opt == 'S') Command_7SegmentsData();
+			else if (loop_opt == '4') Command_RGBLEDSCount();
+			else if (loop_opt == '6') Command_RGBLEDSData();
+			else if (loop_opt == 'R') Command_RGBMatrixData();
+			else if (loop_opt == 'M') Command_MatrixData();
+			else if (loop_opt == 'G') Command_GearData();
+			else if (loop_opt == 'L') Command_I2CLCDData();
+			else if (loop_opt == 'K') Command_GLCDData(); // Nokia | OLEDS
+			else if (loop_opt == 'P') Command_CustomProtocolData();
+			else if (loop_opt == 'X')
+			{
+				String xaction = FlowSerialReadStringUntil(' ', '\n');
+				if (xaction == F("list")) Command_ExpandedCommandsList();
+				else if (xaction == F("mcutype")) Command_MCUType();
+				else if (xaction == F("tach")) Command_TachData();
+				else if (xaction == F("speedo")) Command_SpeedoData();
+				else if (xaction == F("boost")) Command_BoostData();
+				else if (xaction == F("temp")) Command_TempData();
+				else if (xaction == F("fuel")) Command_FuelData();
+				else if (xaction == F("cons")) Command_ConsData();
+				else if (xaction == F("encoderscount")) Command_EncodersCount();
+			}
+		}
+	}
+
+	if (millis() - lastSerialActivity > 5000) {
+		Command_Shutdown();
+	}
+*/
+static const uint8_t crc_table_crc8[256] = { 0,213,127,170,254,43,129,84,41,252,86,131,215,2,168,125,82,135,45,248,172,121,211,6,123,174,4,209,133,80,250,47,164,113,219,14,90,143,37,240,141,88,242,39,115,166,12,217,246,35,137,92,8,221,119,162,223,10,160,117,33,244,94,139,157,72,226,55,99,182,28,201,180,97,203,30,74,159,53,224,207,26,176,101,49,228,78,155,230,51,153,76,24,205,103,178,57,236,70,147,199,18,184,109,16,197,111,186,238,59,145,68,107,190,20,193,149,64,234,63,66,151,61,232,188,105,195,22,239,58,144,69,17,196,110,187,198,19,185,108,56,237,71,146,189,104,194,23,67,150,60,233,148,65,235,62,106,191,21,192,75,158,52,225,181,96,202,31,98,183,29,200,156,73,227,54,25,204,102,179,231,50,152,77,48,229,79,154,206,27,177,100,114,167,13,216,140,89,243,38,91,142,36,241,165,112,218,15,32,245,95,138,222,11,161,116,9,220,118,163,247,34,136,93,214,3,169,124,40,253,87,130,255,42,128,85,1,212,126,171,132,81,251,46,122,175,5,208,173,120,210,7,83,134,44,249 };
+#define sh_crc(crc, val) crc_table_crc8[crc ^ val];
+
+int sh_serial_write(int fd, char *buf, int blen)
+{
+  int ret=0;
+  static uint8_t pid = 0xff;
+  static uint8_t asb[37] = {0x01, 0x01, 0x00};//01 01 PID LEN DD00..DD31 CRC
+  if (fd == -1)
+    return -1;
+  //static char* be = "\n\r";
+  //pid
+  asb[2] = pid;
+  if (pid++ > 127)
+    pid = 0;
+  //len
+  if (blen > 32)
+    blen = 32;
+  asb[3] = blen;
+  //data
+  for (int i = 0; i < blen; i++)
+    asb[4+i] = buf[i];
+  //crc: #i.sent to dash: 01 01 66 07 03 50 31 3b 33 33 0a f1
+  uint8_t lcrc = 0;
+  for (int i = 0; i < blen+2; i++)
+    lcrc = sh_crc(lcrc, asb[2+i]);
+  asb[blen + 4] = lcrc;//&0xff;
+  //write buffer start
+  ret = write(fd,        // Handle to the Serial port
+                   asb,     // Data to be written to the port
+                   blen + 5  //No of bytes to write
+                   );
+  printf("\n#i.send to dash:");
+  for (int i = 0; i < blen+5; i++)
+    printf(" %02x", asb[i]);
+
+  return ret;
+}
+
+int dash_serial_write(int fd, char *_dpkt, int blen)
+{
+  int ret = 0;
+  //write buffer start
+  if (write(fd, "!!", 2) == 2)
+    ret = write(fd, (char *)_dpkt, blen);
+  return ret>0?ret+2:ret;
+}
+
+static int mfc_fltoutpos[MFC_PKTSIZE];
+//Exponentially Weighted Moving Average filter
+int mfc_ewmaf_set(int dof, int input)
+{
+  if (dof < 0 || dof >= MFC_PKTSIZE)
+    return 0;
+  mfc_fltoutpos[dof] = input;
+  return input;
+}
+
+int mfc_ewmaf(int dof, int input, float wi)
+{
+  if (dof < 0 || dof >= MFC_PKTSIZE)
+    return input;
+  mfc_fltoutpos[dof] = (int)(wi * (float)(input - mfc_fltoutpos[dof])) + mfc_fltoutpos[dof];
+  return mfc_fltoutpos[dof];
 }

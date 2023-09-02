@@ -144,7 +144,10 @@ char _omotion = 1;
 char _oml = 2;
 int _omspeed = 5;
 char bcast_addr[35] = {0};
+char *_bcastaddr = NULL;
 char _done = 0;
+char _trlos_move = 0; //traction loss motion
+char _surge_move = 0; //surge motion
 
 #define MOTION_FREQ_MS      30
 
@@ -285,7 +288,7 @@ typedef struct {
 } p1dof;
 static p1dof mfc_dof[DOF_MAX];
 static int dof_count = 0; //number of DOFs detected
-static char dofports[DOF_MAX][255] = {""};
+static char dofports[DOF_MAX][900] = {""};
 
 /*
 intensity factor implementation:
@@ -355,6 +358,7 @@ int filter (input)
 }
 */
 float mfc_intensity = 10.0f / 100.0f; //10% default intensity
+#if 0
 int mfc_fltoutpos[DOF_MAX];
 //Exponentially Weighted Moving Average filter
 int mfc_ewmaf(int dof, int input, float wi)
@@ -364,6 +368,7 @@ int mfc_ewmaf(int dof, int input, float wi)
   mfc_fltoutpos[dof] = (int)(wi * (float)(input - mfc_fltoutpos[dof])) + mfc_fltoutpos[dof];
   return mfc_fltoutpos[dof];
 }
+#endif
 
 int env_init (int argc, char *argv[])
 {
@@ -390,8 +395,11 @@ int env_init (int argc, char *argv[])
     { "mfc4dof" ,no_argument,       0, '4' },
     { "mfc5dof" ,no_argument,       0, '5' },
     { "mfc6dof" ,no_argument,       0, '6' },
+    { "trloss"  ,no_argument,       0, 't' },
+    { "surge"   ,no_argument,       0, 'u' },
     //{ "dummy",   no_argument,       0, 'y' },
-    { "device",  required_argument, 0, 'd' },
+    { "device",    required_argument, 0, 'd' },
+    { "motion-ip", required_argument, 0, 'm' },
     { 0, 0, 0, 0 }
   };
 
@@ -400,7 +408,7 @@ int env_init (int argc, char *argv[])
     /* getopt_long stores the option index here. */
     int option_index = 0;
 
-    c = getopt_long (argc, argv, "d:s:D:l:i:hVank2", long_options, &option_index);
+    c = getopt_long (argc, argv, "d:s:D:l:i:m:hVank123456tu", long_options, &option_index);
 
     /* Detect the end of the options. */
     if (c == -1)
@@ -467,8 +475,13 @@ int env_init (int argc, char *argv[])
         _odbg++;
         break;
 
-      case 'm': //motion enabled
-        _omot++;
+      case 'm': //server address for telemetry data broadcast
+        if(inet_addr(optarg) <= 0)
+        {
+          printf("\n#E:invalid server address %s", optarg);
+          exit(-1);
+        }
+        _bcastaddr = optarg;
         break;
 
       case 'd': //output device vid:pid
@@ -526,9 +539,17 @@ int env_init (int argc, char *argv[])
         break;
 
       case 's': //motion speed: more means faster, 0 is fastest
-        _omspeed = atoi (optarg);
+        _omspeed = atoi(optarg);
         if (_omspeed < 1 || _omspeed > 7)
           _omspeed = 4;
+        break;
+
+      case 't': //traction loss motion
+        _trlos_move = 1;
+        break;
+
+      case 'u': //surge motion
+        _surge_move = 1;
         break;
 
       case 'V':
@@ -556,10 +577,13 @@ int env_init (int argc, char *argv[])
   printf ("\n#running configuration:");
   printf ("\n#   motion response %dms (-l%d) range [0..100]", _oml, _oml);
   printf ("\n#      motion speed %d (-s %d) range [1..7]", _omspeed, _omspeed);
+  printf ("\n#     output intensity %d%%", (int)(mfc_intensity * 100.0f));
+  printf ("\n#     traction loss %s (-t)", _trlos_move?"ON":"OFF");
+  printf ("\n#             surge %s (-u)", _surge_move?"ON":"OFF");
   printf ("\n#   verbosity level %d (-d %d)", _odbg, _odbg);
   printf ("\n#  output interface %s", out_ifn[out_ifx]);
   printf ("\n#     output device %04x:%04x", odvid, odpid);
-  printf ("\n#     output intensity %d%%", (int)(mfc_intensity * 100.0f));
+  printf ("\n#motion server IP %s (-m %s)", _bcastaddr?_bcastaddr:"127.0.0.1", _bcastaddr?_bcastaddr:"127.0.0.1");
   printf ("\n# ##");
   //
   return 1;
@@ -819,11 +843,11 @@ static int xdof_find ()
 {
   int dev_i, ret, pk = 0;
   libusb_device_handle *handle = NULL;
-  char description[256];
-  char dvendor[256];
-  char dproduct[256];
-  char dserial[256];
-	unsigned char string[256];
+  char description[800];
+  char dvendor[250];
+  char dproduct[250];
+  char dserial[250];
+	unsigned char string[250];
   //
   if (!ctx)
   {
@@ -867,7 +891,7 @@ static int xdof_find ()
             if (!ret)
               continue;
             usb_string_fix(string);
-            snprintf (dvendor, 255, "%s", string);
+            snprintf (dvendor, 255, (char *)string);
           }
           else
             snprintf (dvendor, 10, "%04x", odvid);
@@ -893,7 +917,7 @@ static int xdof_find ()
           else
             *dserial = 0;
           //
-          snprintf (description, 255, "%s%s%s", dvendor, dproduct, dserial);
+          snprintf (description, 800, "%s%s%s", dvendor, dproduct, dserial);
           printf ("\n#i:found device '%s','%s','%s' as '%s'", dvendor, dproduct, dserial, description);
           //
           char *ldp = description;
@@ -906,7 +930,7 @@ static int xdof_find ()
           //
           //printf ("\n#i:%s", description);
           if (pk < DOF_MAX)
-            snprintf (dofports[pk++], 254, "/dev/serial/by-id/usb-%s-if00-port0", description);
+            snprintf (dofports[pk++], 900, "/dev/serial/by-id/usb-%s-if00-port0", description);
           //
           libusb_close (handle);
         }
@@ -1210,7 +1234,7 @@ static int mfcXdof_init ()
     mfc_dof[i].ctlfd = -1;
     mfc_dof[i].pos = 0;
     //initialize smoothing filter
-    mfc_fltoutpos[i] = MFCxDOF_MIDPOS; //middle point used here
+    mfc_ewmaf_set(i, MFCxDOF_MIDPOS); //middle point used here
   }
   //Arduino uses one FD for all axis
   mfc_dof[dof_back].ctlport = dofports[0];
@@ -1284,14 +1308,64 @@ static int mfcXdof_set_home ()
   return 1;
 }
 
-static int mfcXdof_set_pos (int *pdata)
+//use exclusively for traction loss and surge, could add yaw
+//do traction loss on motor 0, surge on motor 1 and yaw on motor 2, maybe belt tensioner on motor 3
+static int mfcXdof_set_pos_TLSYB(int *pdata)
 {
+  static int dof1move;
+  if (_trlos_move || _surge_move)
+  {
+    if (_trlos_move)
+    {
+      dof1move = get_cmap(pdata[MFC_PIYAW] + pdata[MFC_PITLOSS], MFC_POS_MIN, MFC_POS_MAX, mfc_dof[dof_back].amin, mfc_dof[dof_back].amax);
+      //dof1move = get_cmap(pdata[MFC_PITLOSS], MFC_POS_MIN, MFC_POS_MAX, mfc_dof[dof_back].amin, mfc_dof[dof_back].amax);
+      //apply intensity filter
+      dof1move = mfc_ewmaf(dof_back, dof1move, mfc_intensity);
+      //
+      mfcXcmd[2] = *(((char *)&dof1move) + 1);
+      mfcXcmd[3] = *(((char *)&dof1move));
+    }
+    //do traction loss on motor 0 and surge on motor 1
+    if (_surge_move)
+    {
+      dof1move = get_cmap(pdata[MFC_PISURGE], MFC_POS_MIN, MFC_POS_MAX, mfc_dof[dof_back].amin, mfc_dof[dof_back].amax);
+      //apply intensity filter
+      dof1move = mfc_ewmaf(dof_aback, dof1move, mfc_intensity);
+      //
+      mfcXcmd[4] = *(((char *)&dof1move) + 1);
+      mfcXcmd[5] = *(((char *)&dof1move));
+    }
+    if (0)
+      printf("\n#i:in fpos L%d, R%d", dof2l, dof2r);
+    //send command
+    if (write(mfc_dof[dof_back].ctlfd, mfcXcmd, mfcXdofcl) != mfcXdofcl)
+    {
+      printf("\n#E:MFC2DOF command '%s' failed for pos L%d, R%d",
+             mfcXcmd, dof2l, dof2r);
+    }
+    //
+    if (_odbg)
+    {
+      printf("\n#i:MFC2DOF cmd 'P4<%d><%d>!!' <%d,%d><%d,%d>, pos L%d, R%d",
+             mfcXcmd[2] * 256 + mfcXcmd[3], mfcXcmd[7] * 256 + mfcXcmd[8],
+             mfcXcmd[2], mfcXcmd[3], mfcXcmd[7], mfcXcmd[8], dof2l, dof2r);
+    }
+    return 1;
+  }
+  //not reached unless 
+  return 0;
+}
+
+static int mfcXdof_set_pos(int *pdata)
+{
+  if (_trlos_move || _surge_move)
+    return mfcXdof_set_pos_TLSYB(pdata);
   //comonly used
-  dof2pp = pdata[MFC_PIPITCH] + pdata[MFC_PISURGE] + pdata[MFC_PIHEAVE];
+  dof2pp = pdata[MFC_PIPITCH] + pdata[MFC_PISURGE];
   dof2pr = pdata[MFC_PIROLL] + pdata[MFC_PISWAY]; //maybe use for 3rd/5th DOF?!
   //do some common computing here, to be reused
-  dof2l = dof2pp + dof2pr;
-  dof2r = dof2pp - dof2pr;
+  dof2l = dof2pp + dof2pr + pdata[MFC_PIHEAVE];
+  dof2r = dof2pp - dof2pr + pdata[MFC_PIHEAVE];
   if (_odbg)
     printf ("\n#i:in pos L%d, R%d", dof2l, dof2r);
   switch (out_ifx)
@@ -1322,7 +1396,7 @@ static int mfcXdof_set_pos (int *pdata)
         if (1)  //no traction loss, just platform pitch but in the other direction
         {
           static int dof3pp = 0;
-          dof3pp = get_cmap (-dof2pp, MFC_POS_MIN, MFC_POS_MAX, mfc_dof[dof_back].amin, mfc_dof[dof_back].amax);
+          dof3pp = get_cmap (-dof2pp + pdata[MFC_PIHEAVE], MFC_POS_MIN, MFC_POS_MAX, mfc_dof[dof_back].amin, mfc_dof[dof_back].amax);
           //apply intensity filter
           dof3pp = mfc_ewmaf(dof_back, dof3pp, mfc_intensity);
           mfcXcmd[6] = *(((char *)&dof3pp) + 1);
@@ -1334,8 +1408,8 @@ static int mfcXdof_set_pos (int *pdata)
       } //3DOF
       else if (out_ifx == oi_mfc4dof)
       {
-        dof2l = -dof2pp + dof2pr;
-        dof2r = -dof2pp - dof2pr;
+        dof2l = -dof2pp + dof2pr + pdata[MFC_PIHEAVE];
+        dof2r = -dof2pp - dof2pr + pdata[MFC_PIHEAVE];
         //alt. left - back left
         dof2l = get_cmap (dof2l, MFC_POS_MIN, MFC_POS_MAX, mfc_dof[dof_back].amin, mfc_dof[dof_back].amax);
         //alt. right - back right
@@ -1370,7 +1444,7 @@ static int mfcXdof_set_pos (int *pdata)
   //
   if (_odbg)
   {
-    printf ("\n#i:MFC2DOF cmd 'P2<%d><%d>!!' <%d,%d><%d,%d>, pos L%d, R%d",
+    printf ("\n#i:MFC2DOF cmd 'P4<%d><%d>!!' <%d,%d><%d,%d>, pos L%d, R%d",
         mfcXcmd[2] * 256 + mfcXcmd[3], mfcXcmd[7] * 256 + mfcXcmd[8],
         mfcXcmd[2], mfcXcmd[3], mfcXcmd[7], mfcXcmd[8], dof2l, dof2r);
   }
@@ -1745,7 +1819,7 @@ static int scnAdof_home_init ()
       scn_set_vel (mfc_dof[i].ctlfd, scn_speeds[ds_gear1], DEFA_ACMD);
       scn_get_response (mfc_dof[i].ctlfd, rsp);
     }
-    mfc_fltoutpos[i] = get_cmap (0, MFC_POS_MIN, MFC_POS_MAX, mfc_dof[i].cmax, mfc_dof[i].cmin); //middle point used here
+    mfc_ewmaf_set(i, get_cmap (0, MFC_POS_MIN, MFC_POS_MAX, mfc_dof[i].cmax, mfc_dof[i].cmin)); //middle point used here
   }
   //
   scnAdof_set_home ();
@@ -2143,7 +2217,7 @@ void mfc_svr_add ()
 {
   if (mfc_svrfd < 0)
   {
-    mfc_svrfd = mfc_bcast_prep ("127.0.0.1", 1);
+    mfc_svrfd = mfc_bcast_prep (_bcastaddr?_bcastaddr:"127.0.0.1", 1);
     if (_odbg)
       printf ("\n#i:SVR connected to %d", mfc_svrfd);
   }
@@ -2249,6 +2323,8 @@ void mfc_setup_fds ()
     mfc_svr_add ();
     fflush (stdout);
   }
+  if (mfc_svrfd < 0)
+    _done = 1;
 }
 
 int main (int argc, char **argv)
@@ -2264,12 +2340,13 @@ int main (int argc, char **argv)
   int i, mms = 0, cms;
   int _motion = 1;
   unsigned char buf[254];
-  float cltime;
+  float cltime = get_fms();
   //
   struct pollfd fds[15];
   nfds_t poll_i;
+#define POLL_TMO_MS  (5000)
   //poll return is 0 on timeout
-  int pr = 0;
+  int pr = 0, offkntr = 0;
   int fdof_mode = PKTT_0DOF;
   mfc_setup_fds ();
   if (mfc_motfd > 0)
@@ -2280,7 +2357,6 @@ int main (int argc, char **argv)
   int *pkt = mfc_bcast_pktget ();
   int pktl = mfc_bcast_pktlen ();
   //setup internal timer ms
-  cltime = ctime_ms (0);
   while (!_done)
   {
     //if we have poll timeout, we can look for configuration changes
@@ -2314,11 +2390,11 @@ int main (int argc, char **argv)
     //poll all events
     if (poll_i > 0)
     {
-      pr = poll (fds, poll_i, 5000);
+      pr = poll (fds, poll_i, POLL_TMO_MS);
       /*
        * read/update timestamp
        */
-      cltime = (float)ctime_ms(0)/1000.0f;
+      cltime = get_fms();
     }
     else
     {
@@ -2350,9 +2426,22 @@ int main (int argc, char **argv)
         _motion = 0;
         xdof_stop ();
         printf ("\n#i@%.3f:STOP motion", cltime);
-        fflush (stdout);
         //
       }
+      offkntr++;  //every 5sec; 12per min
+#define APP_TMO_MINS  (15)
+#define APP_TMO_STEP  (60000/POLL_TMO_MS)
+      if ((offkntr % APP_TMO_STEP) == 0) //15 min timeout
+      {
+        if (offkntr > APP_TMO_MINS * APP_TMO_STEP) //15 min timeout
+        {
+          printf ("\n#w@%.3f:motion platform not used, timed out", cltime);
+          _done = 1;
+        }
+        else
+          printf ("\n#w@%.3f:motion platform not used, timeout in %dmins", cltime, 1 + (APP_TMO_MINS - (offkntr/APP_TMO_STEP)));
+      }
+      fflush (stdout);
     }
     else if (pr < 0)
     {
@@ -2369,6 +2458,7 @@ int main (int argc, char **argv)
         xdof_start ();
         printf ("\n#i@04%.3f:START motion", cltime);
         fflush (stdout);
+        offkntr = 0; //reset app timeout counter
       }
       //update ffb time
       for (i = 0; i < poll_i; ++i)
@@ -2515,8 +2605,7 @@ int main (int argc, char **argv)
     } //if poll
   } //while 1
   //
-  cltime = (float)ctime_ms(0)/1000.0f;
-  printf ("\n#i:for %.3fsec, processes %d/%d pkts(evt/drop)", cltime, rkntr, rkdrop);
+  printf ("\n#i:for %.3fsec, processes %d/%d pkts(evt/drop)", get_fms(), rkntr, rkdrop);
   printf ("\n#i:handled %dpkts, cleaning up..", rkntr + rkffb + rkdat + rkdrop);
   //
   mfc_svr_del ();

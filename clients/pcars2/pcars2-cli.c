@@ -81,7 +81,7 @@ b. g-force - lateral (invert) - add
 #if 1
 float _pitchprc = -30.0f;
 float _rollprc  = 20.0f;
-float _yawprc   = 60.0f;
+float _yawprc   = 0.0f;
 float _surgeprc = -30.0f;
 float _swayprc  = -30.0f;
 float _heaveprc = -30.0f;
@@ -108,16 +108,274 @@ char *_dashaddr = NULL;
 int _lport = SMS_UDP_PORT; /* Project Cars sends to this port: 5605 */
 char _learn = 0;
 
-//int Mpkt[MFC_PKT_SIZE] = {1, 1,   50483,   43371,   1795547,   11451,   14847,   5426, 1};
-// *!!!* careful with indexes as they need to correspond to the data pkt order
-//                               //pitch  //surge  //heave  //roll   //sway   //yaw     //trloss
-static int Mpkt[MFC_PKTSIZE] = {1, 1,   50483,   11451,   5426,    43371,   14847,   1795547,  4430, 0, 0, 0}; //MAX values
-static int mpkt[MFC_PKTSIZE] = {1, 1,  -50483,  -11451,  -5426,   -43371,  -14847,  -1795547, -4430, 0, 0, 0}; //min values
-
 static void usage(char *app)
 {
   printf("%s %s\n", app, MFC_VERSION);
 }
+
+static int *_cpkt, *_dpkt, pktl;
+//int Mpkt[MFC_PKT_SIZE] = {1, 1,   50483,   43371,   1795547,   11451,   14847,   5426, 1};
+// *!!!* careful with indexes as they need to correspond to the data pkt order
+//                                    //pitch  //surge  //heave  //roll   //sway   //yaw     //trloss
+static int Mpkt[MFC_PKTSIZE] = {1, 1,   50483,   11451,   5426,    43371,   14847,   1795547,  4430, 0, 0, 0}; //MAX values
+static int mpkt[MFC_PKTSIZE] = {1, 1,  -50483,  -11451,  -5426,   -43371,  -14847,  -1795547, -4430, 0, 0, 0}; //min values
+
+int mfc_packet_use(char* packetBuffer, int pktsz, float lts, float lts2)
+{
+  //local math vars
+  //learning values
+  static float fv[MFCDASH_PKTSIZE];
+  static float ori0 = 0, ori1 = 0, ori2 = 0;
+  static float acc0 = 0, acc1 = 0, acc2 = 0;
+  static float vel0 = 0, vel1 = 0, vel2 = 0;
+  //printf("\n#i.max axis at 60%%: %.3f", get_cmap_f(-137, -1795547, 1795547, -6000, 6000));
+  #define DOF_MAG (10000)
+  /* uses 10000 magnitude to not lose much fidelity on computation
+                                
+                                179.554748535156
+  */
+  sTelemetryData *tpkt = (sTelemetryData*)packetBuffer;
+  //printf ("speed %f %d\n", tpkt->sSpeed, (int)(tpkt->sSpeed*2.42f));
+  //float							sSuspensionTravel[4];							// 312 16
+  //~0.080 still
+  //- 0 front LT:
+  //- 1 front RT:
+  //- 2  back LT:
+  //- 3  back RT:
+  //float							sOrientation[3];									// 52 12
+  //float							sAngularVelocity[3];							// 88 12
+  //- 1  roll: +LT
+  //float							sLocalVelocity[3];								// 64 12
+  //- 0  roll: +LT,  -RT
+  //- 2 pitch: +ACC, -BRK
+  //float							sLocalAcceleration[3];						// 100 12
+  // tenths
+  //- 0  roll: +LT,  -RT
+  //- 2 pitch: -ACC, +BRK
+  //#i:telem  -7.79411411     -1.03792381     -9.79688072     0.00000000
+  //#i:telem  -6.75643492     -1.22993863     -10.73717594    0.00000000
+  //#i:telem  +12.45860386    +0.02436667     +3.99445176     0.00000000
+  //#i:telem  +14.37643242    +0.14723888     +4.68823385     0.00000000
+  //#i:telem  +12.37826157    -0.06973051     +7.29721689     0.00000000
+  //float							sSpeed;														// 36 4
+/*
+Pitch is the tilt of the car forwards or backwards in [°]
+Roll is how much the car is dipped to the left or right in [°]
+Yaw is the heading of the car (north, east, south, west) in [°]
+
+Surge means the acceleration of the car in longitudinal direction [g]
+Sway means the acceleration of the car in lateral direction [g]
+Heave means the acceleration up and down [g]
+			float							sOrientation[3];									// 52 12
+			float							sLocalVelocity[3];								// 64 12
+			float							sWorldVelocity[3];								// 76 12
+			float							sAngularVelocity[3];							// 88 12
+			float							sLocalAcceleration[3];						// 100 12
+			float							sWorldAcceleration[3];						// 112 12
+* Yaw, roll and pitch inputs from the Orientation values
+* Sway, Surge, and Heave inputs we get from the Local Acceleration values
+* Traction loss happens when the car is not pointing in the direction of travel.
+Most of the time it takes math to get this answer.
+But with PCars, it provides this info in one of the the LocalVelocity outputs I believe
+**Most likely what you will want to run the sim with is Sway and Surge.
+As Pitch and Roll will just tip the sim with the current angles of the track.
+Where Sway and Surge will let you feel the gforces produced by the car.
+**
+PCars is one of the easiest: roll/pitch/yaw is the orientation vector and heave/sway/surge is the local acceleration vector.
+--
+example from LFS V3_Dash\AdditionPlugin\Plugin.vb: 186
+With MyOutsim_Internal
+    Roll_Output = (.sngOrientation2 * 180 / 3.14159)
+    Pitch_Output = (.sngOrientation1 * 180 / 3.14159) * -1
+    Heave_Output = (System.Math.Cos(.sngOrientation2) * .sngAcceleration2)
+    Yaw_Output = (.sngOrientation0 * 180 / 3.14159)
+    Sway_Output = ((System.Math.Cos(.sngOrientation0) * .sngAcceleration0) + (System.Math.Sin(.sngOrientation0) * .sngAcceleration1))
+    Surge_Output = ((-System.Math.Sin(.sngOrientation0) * .sngAcceleration0) + (System.Math.Cos(.sngOrientation0) * .sngAcceleration1))
+    Extra1_Output = (((System.Math.Sin(.sngOrientation0) * .sngAcceleration0) + (System.Math.Sin(.sngOrientation0) * .sngAcceleration1)) * -1)
+End With
+*/
+    //motion data packet
+    /*
+    PCars is one of the easiest.
+    roll/pitch/yaw is the orientation vector and heave/sway/surge is the local acceleration vector
+    */
+    //motion
+#define ORIENTATION_IDX 52
+#define ORIENTATION_IDX0 56 //yaw   ori+4
+#define ORIENTATION_IDX1 52 //pitch ori+0
+#define ORIENTATION_IDX2 60 //roll  ori+8
+#define LOCAL_ACCEL_IDX 100
+#define LOCAL_ACCEL_IDX0 104
+#define LOCAL_ACCEL_IDX1 100
+#define LOCAL_ACCEL_IDX2 108
+#define LOCAL_VELOC_IDX 64
+#define LOCAL_VELOC_IDX0 64
+#define LOCAL_VELOC_IDX1 68
+#define LOCAL_VELOC_IDX2 72
+    ori0 = get_float (packetBuffer, ORIENTATION_IDX0); //yaw
+    ori1 = get_float (packetBuffer, ORIENTATION_IDX1); //pitch
+    ori2 = get_float (packetBuffer, ORIENTATION_IDX2); //roll
+    acc0 = get_float (packetBuffer, LOCAL_ACCEL_IDX0); //sway
+    acc1 = get_float (packetBuffer, LOCAL_ACCEL_IDX1); //surge
+    acc2 = get_float (packetBuffer, LOCAL_ACCEL_IDX2); //heave
+    vel0 = get_float (packetBuffer, LOCAL_VELOC_IDX0);
+    vel1 = get_float (packetBuffer, LOCAL_VELOC_IDX1);
+    vel2 = get_float (packetBuffer, LOCAL_VELOC_IDX2);
+    if (_odbg)
+      printf ("\n#i@%.3f:t1 %f %f %f %f %f %f %f %f %f", lts,
+        ori0, ori1, ori2, acc0, acc1, acc2, vel0, vel1, vel2);
+    /*
+    dof_heave = cos(ori2) * acc2;
+    dof_sway  = cos(ori0) * acc0 + sin(ori0) * acc1;
+    dof_surge = -sin(ori0) * acc0 + cos(ori0) * acc1;
+    dof_tloss = sin(ori0) * acc0 + sin(ori0) * acc1;
+    */
+    // convert radian values to degrees
+    fv[MFC_PIPITCH] = ori1 * RAD2DEG;
+    //_cpkt[MFC_PIPITCH] = -get_cmap (pf_pitch, -100, 100, -1000, 1000);
+    //
+    // formula based, but wrong? -> fv[MFC_PISURGE] = (-sin(ori2) * acc0 + cos(ori2) * acc2) / 10.f;//acc1 * RAD2DEG;
+    fv[MFC_PISURGE] = (cos(ori2) * acc2 + sin(ori2) * acc2) / GRAVACCEL;
+    //_cpkt[MFC_PISURGE] = -get_cmap (pw_pitch, -32800, 32800, -7000, 7000);
+    //
+    // formula based, wrong -> fv[MFC_PIHEAVE] = (cos(ori2) * acc0) / 10.f;//acc2 * RAD2DEG;
+    fv[MFC_PIHEAVE] = (cos(ori2) * acc0 + sin(ori2) * acc0) / GRAVACCEL;
+    //_cpkt[MFC_PIHEAVE] = -get_cmap (pv_pitch, -128, 128, -2000, 2000);
+    //
+    fv[MFC_PIROLL] = ori2 * RAD2DEG;
+    //_cpkt[MFC_PIROLL]  = get_cmap (pf_roll, -128, 128, -7000, 7000);
+    //
+    //-formula based -> fv[MFC_PISWAY] = (cos(ori1) * acc1 + sin(ori1) * acc0) / 10.f;//acc0 * RAD2DEG;
+    fv[MFC_PISWAY] = (cos(ori2) * acc1 + sin(ori2) * acc1) / GRAVACCEL;
+    //_cpkt[MFC_PISWAY]  = get_cmap (get_float (packetBuffer, local_accel_idx)*100, 8200, 8200, -3000, 3000);
+    //
+    fv[MFC_PIYAW] = ori0 * RAD2DEG;
+    //_cpkt[MFC_PIYAW]   = get_cmap (pw_roll, -16400, 16400, -10000, 10000);
+    //
+    //fv[MFC_PITLOSS] = (sin(ori1) * acc1 + sin(ori1) * acc0);
+    fv[MFC_PITLOSS] = vel0 / GRAVACCEL;
+    //fv[MFC_PITLOSS] = (sin(ori0) * acc1) / 10.f;
+    _cpkt[MFC_PIPITCH]  = (int)(fv[MFC_PIPITCH] * DOF_MAG);
+    _cpkt[MFC_PISURGE]  = (int)(fv[MFC_PISURGE] * DOF_MAG);
+    _cpkt[MFC_PIHEAVE]  = (int)(fv[MFC_PIHEAVE] * DOF_MAG);
+    _cpkt[MFC_PIROLL]   = (int)(fv[MFC_PIROLL] * DOF_MAG);
+    _cpkt[MFC_PISWAY]   = (int)(fv[MFC_PISWAY] * DOF_MAG);
+    _cpkt[MFC_PIYAW]    = (int)(fv[MFC_PIYAW] * DOF_MAG);
+    _cpkt[MFC_PITLOSS]  = (int)(fv[MFC_PITLOSS] * DOF_MAG);
+    //
+    if (0)
+      printf ("\n#i:telem %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f",
+        fv[MFC_PIPITCH]>=0.0f?" +":" ", fv[MFC_PIPITCH], fv[MFC_PISURGE]>=0.0f?" +":" ", fv[MFC_PISURGE],
+        fv[MFC_PIHEAVE]>=0.0f?" +":" ", fv[MFC_PIHEAVE], fv[MFC_PIROLL]>=0.0f?" +":" ", fv[MFC_PIROLL], 
+        fv[MFC_PISWAY]>=0.0f?" +":" ", fv[MFC_PISWAY], fv[MFC_PIYAW]>=0.0f?" +":" ", fv[MFC_PIYAW]);
+    if (0 || _odbg)
+      printf ("\n#i@%.3f:t2 p%f s%f h%f r%f w%f y%f t%f", lts,
+        fv[MFC_PIPITCH], fv[MFC_PISURGE], fv[MFC_PIHEAVE], 
+        fv[MFC_PIROLL], fv[MFC_PISWAY], 
+        fv[MFC_PIYAW], fv[MFC_PITLOSS]);
+    if (0 || _odbg)
+      printf ("\n#i@%.3f:telem pitch %d %d %d roll %d %d yaw %d %d", lts,
+        _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE], 
+        _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
+        _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
+  //
+  if (_learn)
+  {
+    char _newrange = 0;
+    for (int i = MFC_PITDAT + 1; i < MFC_PKTSIZE; ++i)
+    {
+      if (_cpkt[i] < mpkt[i])
+      {
+        mpkt[i] = _cpkt[i];
+        //_newrange = 1;
+        printf ("\n#E:%d# [%d.. %d ..%d]", i, mpkt[i], _cpkt[i], Mpkt[i]);
+      }
+      if (_cpkt[i] > Mpkt[i])
+      {
+        Mpkt[i] = _cpkt[i];
+        //_newrange = 1;
+        printf ("\n#E:%d# [%d.. %d ..%d]", i, mpkt[i], _cpkt[i], Mpkt[i]);
+      }
+    }
+    if (_newrange)
+      for (int i = MFC_PITDAT + 1; i < MFC_PKTSIZE; ++i)
+        printf ("\n#E:%d# [%d.. %d ..%d]", i, mpkt[i], _cpkt[i], Mpkt[i]);
+  }
+    //pitch
+    _cpkt[MFC_PIPITCH] = get_cmap_f (_cpkt[MFC_PIPITCH], mpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH], MFC_POS_MIN, MFC_POS_MAX);
+    _cpkt[MFC_PISURGE] = get_cmap_f (_cpkt[MFC_PISURGE], mpkt[MFC_PISURGE], Mpkt[MFC_PISURGE], MFC_POS_MIN, MFC_POS_MAX);
+    _cpkt[MFC_PIHEAVE] = get_cmap_f (_cpkt[MFC_PIHEAVE], mpkt[MFC_PIHEAVE], Mpkt[MFC_PIHEAVE], MFC_POS_MIN, MFC_POS_MAX);
+    //roll
+    _cpkt[MFC_PIROLL]  = get_cmap_f (_cpkt[MFC_PIROLL],  mpkt[MFC_PIROLL],  Mpkt[MFC_PIROLL], MFC_POS_MIN, MFC_POS_MAX);
+    _cpkt[MFC_PISWAY]  = get_cmap_f (_cpkt[MFC_PISWAY],  mpkt[MFC_PISWAY],  Mpkt[MFC_PISWAY], MFC_POS_MIN, MFC_POS_MAX);
+    //yaw
+    _cpkt[MFC_PIYAW]   = get_cmap_f (_cpkt[MFC_PIYAW],   mpkt[MFC_PIYAW],   Mpkt[MFC_PIYAW], MFC_POS_MIN, MFC_POS_MAX);
+    //traction loss
+    _cpkt[MFC_PITLOSS] = get_cmap_f (_cpkt[MFC_PITLOSS],   mpkt[MFC_PITLOSS],   Mpkt[MFC_PITLOSS], MFC_POS_MIN, MFC_POS_MAX);
+    //adjust %
+    _cpkt[MFC_PIPITCH] = (float)_cpkt[MFC_PIPITCH] * _pitchprc;
+    _cpkt[MFC_PISURGE] = (float)_cpkt[MFC_PISURGE] * _surgeprc;
+    _cpkt[MFC_PIHEAVE] = (float)_cpkt[MFC_PIHEAVE] * _heaveprc;
+    //
+    _cpkt[MFC_PIROLL]  = (float)_cpkt[MFC_PIROLL]  * _rollprc;
+    _cpkt[MFC_PISWAY]  = (float)_cpkt[MFC_PISWAY]  * _swayprc;
+    //
+    _cpkt[MFC_PIYAW]   = (float)_cpkt[MFC_PIYAW]   * _yawprc;
+    //
+    _cpkt[MFC_PIYAW]   = (float)_cpkt[MFC_PIYAW]   * _yawprc;
+    _cpkt[MFC_PITLOSS] = (float)_cpkt[MFC_PITLOSS] * _trlossprc;
+    
+    if (1 && _odbg)
+      printf ("\n#i@%.3f.t3 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", lts,
+        _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
+        _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
+        _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
+    //
+    mfc_bcast_send ();
+    //send dash data
+    if (_dashaddr)
+    {
+      memcpy(_dpkt, _cpkt, pktl);
+      //dash data
+      /*
+      if you print it in HEX you'll see the system.
+      eg. 6 gear
+      R = 111 = 6F
+      N = 96 = 60
+      1 = 97 = 61
+      2 = 98 = 66
+      3 = 99 = 63
+      4 = 100 = 64
+      5 = 101 = 65
+      6 = 102 = 66
+      eg. 9 gear
+      R = 159 = 9F
+      N = 144 = 90
+      1 = 145 = 91
+      2 = 146 = 92
+      3 = 147 = 93
+      4 = 148 = 94
+      5 = 149 = 95
+      6 = 150 = 96
+      7 = 151 = 97
+      8 = 152 = 98
+      9 = 153 = 99
+      */
+      _dpkt[MFC_DIGEARM] = (int)(tpkt->sGearNumGears & 0x0f);// ((packetBuffer[45]>>4) & 0x0f); //max gears
+      _dpkt[MFC_DIGEAR] = (int)(tpkt->sGearNumGears & 0x0f); //(packetBuffer[45] & 0x0f);     //gear
+      if (_dpkt[MFC_DIGEAR] == 0x0f)
+        _dpkt[MFC_DIGEAR] = -1;
+      _dpkt[MFC_DIRPM]  = (int)tpkt->sRpm; //get_short (packetBuffer, 40);  //rpm
+      _dpkt[MFC_DIRPMM] = (int)tpkt->sMaxRpm - 250; //get_short (packetBuffer, 42) - 250;  //max rpm
+      _dpkt[MFC_DITEMP]  = (int)tpkt->sOilTempCelsius;// get_short (packetBuffer, 22); //water temperature
+      _dpkt[MFC_DIFUEL]  = (int)(tpkt->sFuelLevel * 100.f); //get_float (packetBuffer, 32); //fuel
+      _dpkt[MFC_DISPD]  = (int)(tpkt->sSpeed*2.24f);//(int)get_float (packetBuffer, 36);  //speed
+      //printf ("\n#i@%.3f:d1 spd %d", 0.0f, _dpkt[MFC_DISPD]);
+      mfcdash_bcast_send ();
+    }
+  return 1;
+}
+
 
 int env_init (int argc, char *argv[])
 {
@@ -292,8 +550,6 @@ int main(int argc, char **argv, char **envp)
 
   //printf ("\n#i:>%d:listening on port %d", s, _lport);
   //ctime_ms (1);
-  //learning values
-  float fv[MFCDASH_PKTSIZE];
   //only send 3 PAUSEd packets
   (void) signal(SIGINT, terminate);
   (void) signal(SIGTERM, terminate);
@@ -321,20 +577,10 @@ int main(int argc, char **argv, char **envp)
   memset(&pClasses, 0, sizeof( sVehicleClassNamesData ));
   memset(&sTelem, 0, sizeof( sTelemetryData ));
   //int wpkt[MFC_PKT_SIZE] = {0};
-  //local math vars
-  static float ori0 = 0, ori1 = 0, ori2 = 0;
-  static float acc0 = 0, acc1 = 0, acc2 = 0;
-  static float vel0 = 0, vel1 = 0, vel2 = 0;
-  //printf("\n#i.max axis at 60%%: %.3f", get_cmap_f(-137, -1795547, 1795547, -6000, 6000));
-  #define DOF_MAG (10000)
-  /* uses 10000 magnitude to not lose much fidelity on computation
-                                
-                                179.554748535156
-  */
   //
-  int *_cpkt = mfc_bcast_pktget ();
-  int *_dpkt = mfcdash_bcast_pktget ();
-  int pktl = mfc_bcast_pktlen ();
+  _cpkt = mfc_bcast_pktget ();
+  _dpkt = mfcdash_bcast_pktget ();
+  pktl = mfc_bcast_pktlen ();
   //send control packet with profile % configuration
   _cpkt[MFC_PITYPE] = PKTT_CTRL;
   _cpkt[MFC_PITDAT] = PKTC_PRCFG;
@@ -427,377 +673,7 @@ int main(int argc, char **argv, char **envp)
         {
             case eCarPhysics :
             {
-              //float							sSuspensionTravel[4];							// 312 16
-              //~0.080 still
-              //- 0 front LT:
-              //- 1 front RT:
-              //- 2  back LT:
-              //- 3  back RT:
-              //float							sOrientation[3];									// 52 12
-              //float							sAngularVelocity[3];							// 88 12
-              //- 1  roll: +LT
-              //float							sLocalVelocity[3];								// 64 12
-              //- 0  roll: +LT,  -RT
-              //- 2 pitch: +ACC, -BRK
-              //float							sLocalAcceleration[3];						// 100 12
-              // tenths
-              //- 0  roll: +LT,  -RT
-              //- 2 pitch: -ACC, +BRK
-              //#i:telem  -7.79411411     -1.03792381     -9.79688072     0.00000000
-              //#i:telem  -6.75643492     -1.22993863     -10.73717594    0.00000000
-              //#i:telem  +12.45860386    +0.02436667     +3.99445176     0.00000000
-              //#i:telem  +14.37643242    +0.14723888     +4.68823385     0.00000000
-              //#i:telem  +12.37826157    -0.06973051     +7.29721689     0.00000000
-              //float							sSpeed;														// 36 4
-#if 1
-/*
-Pitch is the tilt of the car forwards or backwards in [°]
-Roll is how much the car is dipped to the left or right in [°]
-Yaw is the heading of the car (north, east, south, west) in [°]
-
-Surge means the acceleration of the car in longitudinal direction [g]
-Sway means the acceleration of the car in lateral direction [g]
-Heave means the acceleration up and down [g]
-			float							sOrientation[3];									// 52 12
-			float							sLocalVelocity[3];								// 64 12
-			float							sWorldVelocity[3];								// 76 12
-			float							sAngularVelocity[3];							// 88 12
-			float							sLocalAcceleration[3];						// 100 12
-			float							sWorldAcceleration[3];						// 112 12
-* Yaw, roll and pitch inputs from the Orientation values
-* Sway, Surge, and Heave inputs we get from the Local Acceleration values
-* Traction loss happens when the car is not pointing in the direction of travel.
-Most of the time it takes math to get this answer.
-But with PCars, it provides this info in one of the the LocalVelocity outputs I believe
-**Most likely what you will want to run the sim with is Sway and Surge.
-As Pitch and Roll will just tip the sim with the current angles of the track.
-Where Sway and Surge will let you feel the gforces produced by the car.
-**
-PCars is one of the easiest: roll/pitch/yaw is the orientation vector and heave/sway/surge is the local acceleration vector.
---
-example from LFS V3_Dash\AdditionPlugin\Plugin.vb: 186
-With MyOutsim_Internal
-    Roll_Output = (.sngOrientation2 * 180 / 3.14159)
-    Pitch_Output = (.sngOrientation1 * 180 / 3.14159) * -1
-    Heave_Output = (System.Math.Cos(.sngOrientation2) * .sngAcceleration2)
-    Yaw_Output = (.sngOrientation0 * 180 / 3.14159)
-    Sway_Output = ((System.Math.Cos(.sngOrientation0) * .sngAcceleration0) + (System.Math.Sin(.sngOrientation0) * .sngAcceleration1))
-    Surge_Output = ((-System.Math.Sin(.sngOrientation0) * .sngAcceleration0) + (System.Math.Cos(.sngOrientation0) * .sngAcceleration1))
-    Extra1_Output = (((System.Math.Sin(.sngOrientation0) * .sngAcceleration0) + (System.Math.Sin(.sngOrientation0) * .sngAcceleration1)) * -1)
-End With
-*/
-  if (_cpkt)
-  {
-    //motion data packet
-    /*
-    PCars is one of the easiest.
-    roll/pitch/yaw is the orientation vector and heave/sway/surge is the local acceleration vector
-    */
-    //motion
-    #if 1
-#define ORIENTATION_IDX 52
-#define ORIENTATION_IDX0 56 //yaw   ori+4
-#define ORIENTATION_IDX1 52 //pitch ori+0
-#define ORIENTATION_IDX2 60 //roll  ori+8
-#define LOCAL_ACCEL_IDX 100
-#define LOCAL_ACCEL_IDX0 104
-#define LOCAL_ACCEL_IDX1 100
-#define LOCAL_ACCEL_IDX2 108
-#define LOCAL_VELOC_IDX 64
-#define LOCAL_VELOC_IDX0 64
-#define LOCAL_VELOC_IDX1 68
-#define LOCAL_VELOC_IDX2 72
-    ori0 = get_float (packetBuffer, ORIENTATION_IDX0); //yaw
-    ori1 = get_float (packetBuffer, ORIENTATION_IDX1); //pitch
-    ori2 = get_float (packetBuffer, ORIENTATION_IDX2); //roll
-    acc0 = get_float (packetBuffer, LOCAL_ACCEL_IDX0); //sway
-    acc1 = get_float (packetBuffer, LOCAL_ACCEL_IDX1); //surge
-    acc2 = get_float (packetBuffer, LOCAL_ACCEL_IDX2); //heave
-    vel0 = get_float (packetBuffer, LOCAL_VELOC_IDX0);
-    vel1 = get_float (packetBuffer, LOCAL_VELOC_IDX1);
-    vel2 = get_float (packetBuffer, LOCAL_VELOC_IDX2);
-    if (_odbg)
-      printf ("\n#i@%.3f:t1 %f %f %f %f %f %f %f %f %f", lts,
-        ori0, ori1, ori2, acc0, acc1, acc2, vel0, vel1, vel2);
-    /*
-    dof_heave = cos(ori2) * acc2;
-    dof_sway  = cos(ori0) * acc0 + sin(ori0) * acc1;
-    dof_surge = -sin(ori0) * acc0 + cos(ori0) * acc1;
-    dof_tloss = sin(ori0) * acc0 + sin(ori0) * acc1;
-    */
-    // convert radian values to degrees
-    fv[MFC_PIPITCH] = ori1 * RAD2DEG;
-    _cpkt[MFC_PIPITCH]  = (int)(fv[MFC_PIPITCH] * DOF_MAG);
-    //_cpkt[MFC_PIPITCH] = -get_cmap (pf_pitch, -100, 100, -1000, 1000);
-    //
-    // formula based, but wrong? -> fv[MFC_PISURGE] = (-sin(ori2) * acc0 + cos(ori2) * acc2) / 10.f;//acc1 * RAD2DEG;
-    fv[MFC_PISURGE] = (cos(ori2) * acc2 + sin(ori2) * acc2) / GRAVACCEL;
-    _cpkt[MFC_PISURGE]  = (int)(fv[MFC_PISURGE] * DOF_MAG);
-    //_cpkt[MFC_PISURGE] = -get_cmap (pw_pitch, -32800, 32800, -7000, 7000);
-    //
-    // formula based, wrong -> fv[MFC_PIHEAVE] = (cos(ori2) * acc0) / 10.f;//acc2 * RAD2DEG;
-    fv[MFC_PIHEAVE] = (cos(ori2) * acc0 + sin(ori2) * acc0) / GRAVACCEL;
-    _cpkt[MFC_PIHEAVE]  = (int)(fv[MFC_PIHEAVE] * DOF_MAG);
-    //_cpkt[MFC_PIHEAVE] = -get_cmap (pv_pitch, -128, 128, -2000, 2000);
-    //
-    fv[MFC_PIROLL] = ori2 * RAD2DEG;
-    _cpkt[MFC_PIROLL]  = (int)(fv[MFC_PIROLL] * DOF_MAG);
-    //_cpkt[MFC_PIROLL]  = get_cmap (pf_roll, -128, 128, -7000, 7000);
-    //
-    //-formula based -> fv[MFC_PISWAY] = (cos(ori1) * acc1 + sin(ori1) * acc0) / 10.f;//acc0 * RAD2DEG;
-    fv[MFC_PISWAY] = (cos(ori2) * acc1 + sin(ori2) * acc1) / GRAVACCEL;
-    _cpkt[MFC_PISWAY]  = (int)(fv[MFC_PISWAY] * DOF_MAG);
-    //_cpkt[MFC_PISWAY]  = get_cmap (get_float (packetBuffer, local_accel_idx)*100, 8200, 8200, -3000, 3000);
-    //
-    fv[MFC_PIYAW] = ori0 * RAD2DEG;
-    _cpkt[MFC_PIYAW]  = (int)(fv[MFC_PIYAW] * DOF_MAG);
-    //_cpkt[MFC_PIYAW]   = get_cmap (pw_roll, -16400, 16400, -10000, 10000);
-    //
-    //fv[MFC_PITLOSS] = (sin(ori1) * acc1 + sin(ori1) * acc0);
-    fv[MFC_PITLOSS] = vel0 / GRAVACCEL;
-    //fv[MFC_PITLOSS] = (sin(ori0) * acc1) / 10.f;
-    _cpkt[MFC_PITLOSS] = (int)(fv[MFC_PITLOSS] * DOF_MAG);
-    //
-    if (0)
-      printf ("\n#i:telem %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f",
-        fv[MFC_PIPITCH]>=0.0f?" +":" ", fv[MFC_PIPITCH], fv[MFC_PISURGE]>=0.0f?" +":" ", fv[MFC_PISURGE],
-        fv[MFC_PIHEAVE]>=0.0f?" +":" ", fv[MFC_PIHEAVE], fv[MFC_PIROLL]>=0.0f?" +":" ", fv[MFC_PIROLL], 
-        fv[MFC_PISWAY]>=0.0f?" +":" ", fv[MFC_PISWAY], fv[MFC_PIYAW]>=0.0f?" +":" ", fv[MFC_PIYAW]);
-    if (_odbg)
-      printf ("\n#i@%.3f:t2 %f %f %f %f %f %f %f", lts,
-        fv[MFC_PIPITCH], fv[MFC_PISURGE], fv[MFC_PIHEAVE], 
-        fv[MFC_PIROLL], fv[MFC_PISWAY], 
-        fv[MFC_PIYAW], fv[MFC_PITLOSS]);
-    if (0 && _odbg)
-      printf ("\n#i@%.3f:telem pitch %d %d %d roll %d %d yaw %d %d", lts,
-        _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE], 
-        _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
-        _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
-  //
-  if (_learn)
-  {
-    char _newrange = 0;
-    for (int i = MFC_PITDAT + 1; i < MFC_PKTSIZE; ++i)
-    {
-      if (_cpkt[i] < mpkt[i])
-      {
-        mpkt[i] = _cpkt[i];
-        //_newrange = 1;
-        printf ("\n#E:%d# [%d.. %d ..%d]", i, mpkt[i], _cpkt[i], Mpkt[i]);
-      }
-      if (_cpkt[i] > Mpkt[i])
-      {
-        Mpkt[i] = _cpkt[i];
-        //_newrange = 1;
-        printf ("\n#E:%d# [%d.. %d ..%d]", i, mpkt[i], _cpkt[i], Mpkt[i]);
-      }
-    }
-    if (_newrange)
-      for (int i = MFC_PITDAT + 1; i < MFC_PKTSIZE; ++i)
-        printf ("\n#E:%d# [%d.. %d ..%d]", i, mpkt[i], _cpkt[i], Mpkt[i]);
-  }
-    //pitch
-    _cpkt[MFC_PIPITCH] = get_cmap_f (_cpkt[MFC_PIPITCH], mpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH], MFC_POS_MIN, MFC_POS_MAX);
-    _cpkt[MFC_PISURGE] = get_cmap_f (_cpkt[MFC_PISURGE], mpkt[MFC_PISURGE], Mpkt[MFC_PISURGE], MFC_POS_MIN, MFC_POS_MAX);
-    _cpkt[MFC_PIHEAVE] = get_cmap_f (_cpkt[MFC_PIHEAVE], mpkt[MFC_PIHEAVE], Mpkt[MFC_PIHEAVE], MFC_POS_MIN, MFC_POS_MAX);
-    //roll
-    _cpkt[MFC_PIROLL]  = get_cmap_f (_cpkt[MFC_PIROLL],  mpkt[MFC_PIROLL],  Mpkt[MFC_PIROLL], MFC_POS_MIN, MFC_POS_MAX);
-    _cpkt[MFC_PISWAY]  = get_cmap_f (_cpkt[MFC_PISWAY],  mpkt[MFC_PISWAY],  Mpkt[MFC_PISWAY], MFC_POS_MIN, MFC_POS_MAX);
-    //yaw
-    _cpkt[MFC_PIYAW]   = get_cmap_f (_cpkt[MFC_PIYAW],   mpkt[MFC_PIYAW],   Mpkt[MFC_PIYAW], MFC_POS_MIN, MFC_POS_MAX);
-    //traction loss
-    _cpkt[MFC_PITLOSS] = get_cmap_f (_cpkt[MFC_PITLOSS],   mpkt[MFC_PITLOSS],   Mpkt[MFC_PITLOSS], MFC_POS_MIN, MFC_POS_MAX);
-    //adjust %
-    _cpkt[MFC_PIPITCH] = (float)_cpkt[MFC_PIPITCH] * _pitchprc;
-    _cpkt[MFC_PISURGE] = (float)_cpkt[MFC_PISURGE] * _surgeprc;
-    _cpkt[MFC_PIHEAVE] = (float)_cpkt[MFC_PIHEAVE] * _heaveprc;
-    //
-    _cpkt[MFC_PIROLL]  = (float)_cpkt[MFC_PIROLL]  * _rollprc;
-    _cpkt[MFC_PISWAY]  = (float)_cpkt[MFC_PISWAY]  * _swayprc;
-    //
-    _cpkt[MFC_PIYAW]   = (float)_cpkt[MFC_PIYAW]   * _yawprc;
-    //
-    _cpkt[MFC_PIYAW]   = (float)_cpkt[MFC_PIYAW]   * _yawprc;
-    _cpkt[MFC_PITLOSS] = (float)_cpkt[MFC_PITLOSS] * _trlossprc;
-    
-    if (1 && _odbg)
-      printf ("\n#i@%.3f.t3 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", lts,
-        _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
-        _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
-        _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
-    #else
-    _cpkt[MFC_PIPITCH] = -get_cmap (pf_pitch, 0, 100, -500, 500);
-    _cpkt[MFC_PISURGE] = -get_cmap (pw_pitch, -32800, 32800, -3500, 3500);
-    _cpkt[MFC_PIHEAVE] = -get_cmap (pv_pitch, -125, 125, -1000, 1000);
-    //
-    _cpkt[MFC_PIROLL]  = get_cmap (pf_roll, -pf_roll_max, pf_roll_max, -3500, 3500);
-    _cpkt[MFC_PISWAY]  = get_cmap (pw_roll, -16400, 16400, -1500, 1500);
-    //
-    _cpkt[MFC_PIYAW]   = 0;//get_cmap (pw_roll, -16400, 16400, -10000, 10000);
-    #endif
-    //
-    mfc_bcast_send ();
-    //send dash data
-    if (_dashaddr)
-    {
-      memcpy(_dpkt, _cpkt, pktl);
-      //dash data
-      _dpkt[MFC_DITEMP]  = (int)get_short (packetBuffer, 22); //water temperature
-      _dpkt[MFC_DIFUEL]  = (int)get_float (packetBuffer, 32); //fuel
-      _dpkt[MFC_DISPD]  = (int)get_float (packetBuffer, 36);  //speed
-      /*
-      if you print it in HEX you'll see the system.
-      eg. 6 gear
-      R = 111 = 6F
-      N = 96 = 60
-      1 = 97 = 61
-      2 = 98 = 66
-      3 = 99 = 63
-      4 = 100 = 64
-      5 = 101 = 65
-      6 = 102 = 66
-      eg. 9 gear
-      R = 159 = 9F
-      N = 144 = 90
-      1 = 145 = 91
-      2 = 146 = 92
-      3 = 147 = 93
-      4 = 148 = 94
-      5 = 149 = 95
-      6 = 150 = 96
-      7 = 151 = 97
-      8 = 152 = 98
-      9 = 153 = 99
-      */
-      _dpkt[MFC_DIGEARM] = (int)((packetBuffer[45]>>4) & 0x0f); //max gears
-      _dpkt[MFC_DIGEAR] = (int)(packetBuffer[45] & 0x0f);     //gear
-      if (_dpkt[MFC_DIGEAR] == 0x0f)
-        _dpkt[MFC_DIGEAR] = -1;
-      _dpkt[MFC_DIRPM]  = (int)get_short (packetBuffer, 40);  //rpm
-      _dpkt[MFC_DIRPMM] = (int)get_short (packetBuffer, 42);  //max rpm
-      //printf ("\n#i@%.3f:d1 gear %d", 0.0f, _dpkt[MFC_DIGEAR]);
-      mfcdash_bcast_send ();
-    }
-  }
-/**
-              //float							sLocalAcceleration[3];						// 100 12
-              // tenths
-              //- 0  roll: +LT,  -RT
-              //- 2 pitch: -ACC, +BRK
-
-              float roll_out, pitch_out, heave_out, yaw_out, sway_out, surge_out;
-              float ori0, ori1, ori2; //orientation/direction of travel
-              float acc0, acc1, acc2; //acceleration of travel
-              roll_out  = (((cos (ori0) * acc0) + (sin (ori0) * acc1)) * -1);
-              pitch_out = (((-sin (ori0) * acc0) + (cos (ori0) * acc1)) * -1);
-              heave_out = (cos (ori2) * acc2);
-              yaw_out   = (((sin (ori0) * acc0) + (sin (ori0) * acc1)) *-1);
-              sway_out  = ((cos (ori0) * acc0) + (sin (ori0) * acc1));
-              surge_out = ((-sin (ori0) * acc0) + (cos (ori0) * acc1));
-
-              A. right axis composition
-              a. g-force - longitudinal/pitch - overwrite
-              b. g-force - lateral - add
-
-              B. left axis composition
-              a. g-force - longitudinal/pitch - overwrite
-              b. g-force - lateral (invert) - add
-
-*/
-#if 0
-              if (_odbg)
-                printf ("\n#i:%04d:telem %s%.8f \t %s%.8f", 
-                  ppkt, fv[2]>0?" +":" ", fv[2], fv[0]>0?" +":" ", fv[0]);
-              //llv = fv[2] + fv[0]; //pitch + roll
-              //lrv = fv[2] - fv[0]; //pitch - roll
-              wpkt[MFC_PIPITCH] = (int)(fv[2] * 1000.0f);
-              //printf (" \t %06d ", wpkt[MFC_PIPITCH]);
-              //range: min .. Max
-              if (wpkt[MFC_PIPITCH] < mpkt[MFC_PIPITCH])
-                mpkt[MFC_PIPITCH] = wpkt[MFC_PIPITCH];
-              if (wpkt[MFC_PIPITCH] > Mpkt[MFC_PIPITCH])
-                Mpkt[MFC_PIPITCH] = wpkt[MFC_PIPITCH];
-              wpkt[MFC_PIPITCH] = (int)get_map (wpkt[MFC_PIPITCH], mpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH], -10000, 10000);
-              //
-              wpkt[MFC_PIROLL]  = (int)(fv[0] * 1000.0f);
-              //printf (" \t %06d ", wpkt[MFC_PIROLL]);
-              //range: min .. Max
-              if (wpkt[MFC_PIROLL] < mpkt[MFC_PIROLL])
-                mpkt[MFC_PIROLL] = wpkt[MFC_PIROLL];
-              if (wpkt[MFC_PIROLL] > Mpkt[MFC_PIROLL])
-                Mpkt[MFC_PIROLL] = wpkt[MFC_PIROLL];
-              wpkt[MFC_PIROLL]  = (int)get_map (wpkt[MFC_PIROLL], mpkt[MFC_PIROLL], Mpkt[MFC_PIROLL], -10000, 10000);
-              //
-              if (_odbg)
-                printf ("\n#i:%04d:Mtelem [%06d \t %06d \t %06d] \t [%06d \t %06d \t %06d]", 
-                  ppkt, 
-                  mpkt[MFC_PIPITCH], wpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH],
-                  mpkt[MFC_PIROLL],  wpkt[MFC_PIROLL],  Mpkt[MFC_PIROLL]);
-#endif
-#if 0
-              //autoadjust min
-              if (lminl > llv)
-                lminl = llv;
-              if (lmaxl < llv)
-                lmaxl = llv;
-              //autoadjust max
-              if (lminr > lrv)
-                lminr = lrv;
-              if (lmaxr < lrv)
-                lmaxr = lrv;
-              //map min/max on actuator range
-              llv = get_map_f (llv, lminl, lmaxl, -10000.0f, 0.0f);
-              lrv = get_map_f (lrv, lminr, lmaxr, -10000.0f, 0.0f);
-              //smooth curve
-              int ld = 50;
-              llv -= (int)llv%ld;
-              lrv -= (int)lrv%ld;
-              //
-              if (_odbg)
-                printf ("\n#i:%04d:telem %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f", 
-                  ppkt, fv[0]>0?" +":" ", fv[0], fv[2]>0?" +":" ", fv[2], llv>0?" +":" ", llv, lrv>0?" +":" ", lrv);
-#endif
-#else //use suspention travel ;)
-              idx = 312;//float							sSuspensionTravel[4];							// 312 16
-              fv[0] = get_float (packetBuffer, idx);
-              //fv[1] = 0.0f;//get_float (packetBuffer, idx + 4);
-              fv[1] = get_float (packetBuffer, idx + 4);
-              fv[2] = 0.0f;//get_float (packetBuffer, idx + 8);
-              //fv[2] = get_float (packetBuffer, idx + 8);
-              fv[3] = 0.0f;//get_float (packetBuffer, idx + 12);
-              //fv[3] = get_float (packetBuffer, idx + 12);
-              //printf ("\n#i:telem %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f", fv[0]>0?" +":" ", fv[0], fv[1]>0?" +":" ", fv[1], fv[2]>0?" +":" ", fv[2], fv[3]>0?" +":" ", fv[3]);
-              //
-              float llv = fv[0];
-              float lrv = fv[1];
-              llv -= 0.080f;
-              lrv -= 0.080f;
-              //
-              llv *= 100000.0f;
-              lrv *= 100000.0f;
-              //
-              llv *= (-1);
-              lrv *= (-1);
-              //autoadjust min
-              if (lminl > llv)
-                lminl = llv;
-              if (lmaxl < llv)
-                lmaxl = llv;
-              //autoadjust max
-              if (lminr > lrv)
-                lminr = lrv;
-              if (lmaxr < lrv)
-                lmaxr = lrv;
-              //map min/max on actuator range
-              llv = get_map_f (llv, lminl, lmaxl, -10000.0f, 0.0f);
-              lrv = get_map_f (lrv, lminr, lmaxr, -10000.0f, 0.0f);
-              //smooth curve
-              int ld = 10;
-              llv -= (int)llv%ld;
-              lrv -= (int)lrv%ld;
-              //
-              printf ("\n#i:telem %s%.8f \t %s%.8f \t %s%.8f \t %s%.8f", fv[0]>0?" +":" ", fv[0], fv[1]>0?" +":" ", fv[1], llv>0?" +":" ", llv, lrv>0?" +":" ", lrv);
-#endif
+              mfc_packet_use(packetBuffer, rlen, lts, lts);
               //
               break;
             }
@@ -845,75 +721,9 @@ End With
           #endif
           default: break;
         }
-        //
-        #if 0
-        if (telemReceived)
-        {
-          //printf ("\n#i:telem RPM %d", ntohs(sTelem.sRpm));
-        }
-        //
-        if (stateReceived)
-        {
-          int gameState = stateData.mGameState & 7;
-          int sessionState = stateData.mGameState >> 4;
-
-          printf(" Game State %i, gameState  %i, sessionState %i \n", stateData.mGameState, gameState, sessionState );
-          printf(" Race Participants  \n");
-          if (participantsReceived)
-          {
-            for (int i=0;i<PARTICIPANTS_PER_PACKET;++i)
-            {
-              if (pData.sName[i][0] != '\0')
-              {
-                printf(" Name %S \n",pData.sName[i]);
-              }
-            }
-            if (participantsReceived2)
-            {
-              for (int i=0;i<PARTICIPANTS_PER_PACKET;++i)
-              {
-                if (pData2.sName[i][0] != '\0')
-                {
-                  printf(" Name %S \n",pData2.sName[i]);
-                }
-              }
-            }
-          }
-          if (vehiclesReceived)
-          {
-            printf("Vehicle Names\n");
-            for (int i=0;i<VEHICLES_PER_PACKET;++i)
-            {
-              if (pVehicles.sVehicles[i].sName[0] != '\0')
-              {
-                printf("Vehicle Name %S, index %d, class %d \n",pVehicles.sVehicles[i].sName[i],pVehicles.sVehicles[i].sIndex, pVehicles.sVehicles[i].sClass);
-              }
-            }
-            if (vehiclesReceived2)
-            {
-              for (int i=0;i<VEHICLES_PER_PACKET;++i)
-              {
-                if (pVehicles2.sVehicles[i].sName[0] != '\0')
-                {
-                  printf("Vehicle Name %S, index %d, class %d \n",pVehicles2.sVehicles[i].sName[i],pVehicles2.sVehicles[i].sIndex, pVehicles2.sVehicles[i].sClass);
-                }
-              }
-            }
-            printf("Class Names\n");
-            for (int i=0;i<CLASSES_SUPPORTED_PER_PACKET;++i)
-            {
-              if (pClasses.sClasses[i].sName[0] != '\0')
-              {
-                printf("Class Name %S, index %d`\n",pClasses.sClasses[i].sName,pClasses.sClasses[i].sClassIndex);
-              }
-            }
-          }
-        }
-        #endif
-        //printf ("\r\n");
       }
     }
-    fflush (stdout);
+    //fflush (stdout);
   }
   //
   //export learned values

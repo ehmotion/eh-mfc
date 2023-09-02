@@ -15,7 +15,6 @@
 #include <signal.h>
 #include <sys/time.h>
 
-
 #include <getopt.h>
 #include <math.h>
 
@@ -249,7 +248,7 @@ struct UDPPacket
 #endif
 
 #define UDP_MAX_PACKETSIZE  2048
-#define UDP_PORT            20778
+#define UDP_PORT            20777
 
 #define DEBUG 0
 #define debug_print(fmt, ...) \
@@ -260,7 +259,7 @@ int inet_aton(const char *cp, struct in_addr *inp);
 
 //get number of millis from app start or first call
 //first call will return 0
-static int ctime_ms(char val)
+int ctime_ms(char val)
 {
   static int st_ms = 0;
     struct timeval te;
@@ -292,7 +291,8 @@ int mfcdash_pkt[MFCDASH_PKTSIZE] = {0};
 char _done = 0;
 char _odbg = 0;
 char *_dashaddr = NULL;
-char _learn = 0;
+char *_bcastaddr = NULL;
+int debug_data = 0;
 
 void terminate (int sig)
 {
@@ -308,247 +308,160 @@ B. right axis composition
 a. g-force - longitudinal/pitch - overwrite
 b. g-force - lateral (invert) - add
 */
-#if 1
-float _pitchprc = -30.0f;
+#if 0
+float _pitchprc = 30.0f;
 float _rollprc  = 20.0f;
 float _yawprc   = 60.0f;
-float _surgeprc = 30.0f;
+float _surgeprc = -30.0f;
 float _swayprc  = -30.0f;
 float _heaveprc = 30.0f;
-float _trlossprc= -60.0f;
+float _trlossprc= 100.0f;
 float _extra1prc= 100.0f;
 float _extra2prc= 100.0f;
 float _extra3prc= 100.0f;
 #else
-float _pitchprc = -100.0f;
-float _rollprc  = -100.0f;
-float _yawprc   = 100.0f;
-float _surgeprc = 100.0f;
-float _swayprc  = -100.0f;
-float _heaveprc = 100.0f;
-float _trlossprc= 100.0f;
+float _pitchprc = 50.0f;
+float _rollprc  = 50.0f;
+float _yawprc   = 0.0f;
+float _surgeprc = -50.0f;
+float _swayprc  = -50.0f;
+float _heaveprc = 50.0f;
+float _trlossprc= 50.0f;
 float _extra1prc= 100.0f;
 float _extra2prc= 100.0f;
 float _extra3prc= 100.0f;
 #endif
 static int *_cpkt, *_dpkt, pktl;
-/* original min/Max
-//MAX values
-static int Mpkt[MFC_PKTSIZE] = {1, 1,   127700,   27465,   68605,    79686,   20256,   1799992,  232291, 0, 0, 0};
-//min values
-static int mpkt[MFC_PKTSIZE] = {1, 1,  -127700,  -27465,  -68605,   -79686,  -20256,  -1799992, -232291, 0, 0, 0};
-*/
-/* learning mode
-#i:new min/Max values:
-static int mpkt = [0, 0, -55789, -17792, -25177, -39887, -27095, -1793308, -83005, 0, 0, 0];
-static int Mpkt = [0, 0, 71807, 16820, 10602, 20307, 12984, 1795649, 94049, 100, 100, 100];
-*/
-/*working ones
-static int mpkt[] = {0, 0, -55789, -17792, -25177, -39887, -27095, -1793308, -83005, 0, 0, 0};
-static int Mpkt[] = {0, 0, 71807, 16820, 10602, 20307, 12984, 1795649, 94049, 100, 100, 100};
-*/
-/*#i:new min/Max values: Greece */
-static int mpkt[] = {0, 0, -120505, -20348, -11314, -106479, -14826, -1122173, -58349, 0, 0, 0};
-static int Mpkt[] = {0, 0, 122573, 11768, 9173, 51371, 13105, 1180647, 79232, 100, 100, 100};
+char _learn = 0;
+
+#define XX 0
+#define YY 1
+#define ZZ 2
+void gforceFromVelocity(float *gforce, const float *velocity)
+{
+  static float lfv = 0.0f;
+  static float llv = 0.0f;
+  static float lvv = 0.0f;
+  //heading in radians
+  float hh = atan2f(velocity[XX], velocity[YY]);
+  //forward velocity
+  float fv = sin(hh) * velocity[XX] + cos(hh) * velocity[YY];
+  //lateral velocity
+  float lv = cos(hh) * velocity[XX] - sin(hh) * velocity[YY];
+  //vertical velocity
+  float vv = velocity[ZZ];
+  //g forces
+  gforce[XX] = ((fv - lfv) * 60.0f) * (1.0f/9.81f);
+  gforce[YY] = ((lv - llv) * 60.0f) * (1.0f/9.81f);
+  gforce[ZZ] = ((vv - lvv) * 60.0f) * (1.0f/9.81f);
+  //save velocities
+  lfv = fv; llv = lv; lvv = vv;
+}
+
+// https://gamedev.stackexchange.com/questions/172147/convert-3d-direction-vectors-to-yaw-pitch-roll-angles
+#define PITCH 0 // up/down
+#define YAW   1 // left/right
+#define ROLL  2 // fall over
+#define sign(x) ((x > 0) - (x < 0))
+void anglesFromVectorsFwUp(float *angles, const float *forward, const float *up)
+{
+    // Yaw is the bearing of the forward vector's shadow in the xy plane.
+    float yaw = atan2(forward[1], forward[0]);
+
+    // Pitch is the altitude of the forward vector off the xy plane, toward the down direction.
+    float pitch = -asin(forward[2]);
+
+    // Find the vector in the xy plane 90 degrees to the right of our bearing.
+    float planeRightX = sin(yaw);
+    float planeRightY = -cos(yaw);
+
+    // Roll is the rightward lean of our up vector, computed here using a dot product.
+    float roll;// = asin(up[1]);
+    if (1)
+    {
+      roll = asin(up[0]*planeRightX + up[1]*planeRightY);
+      // If we're twisted upside-down, return a roll in the range +-(pi/2, pi)
+      if(up[2] < 0)
+          roll = sign(roll) * M_PI - roll;
+    }
+    // Convert radians to degrees.
+    angles[YAW]   =   yaw * 180 / M_PI;
+    angles[PITCH] = pitch * 180 / M_PI;
+    angles[ROLL]  =  roll * 180 / M_PI;
+}
+
+//static int Mpkt[] = {0, 0, 11696, 130, 1108,    0,       191, 93943, 90000, 100, 100, 100};
+//static int mpkt[] = {0, 0, -8958, -134, -3811, -101291, -176, -36455, -14839, 0, 0, 0};
+//                          pit    srg    hev    rol    sway   yaw      tl
+static int Mpkt[] = {0, 0, 10600,  132,   1340, 105000, 191, 93000, 90000, 100, 100, 100};
+static int mpkt[] = {0, 0, -8000, -154,  -3800,  75000,-170,-36000, -90000, 0, 0, 0};
 
 int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
 {
-  //static float ori0 = 0, ori1 = 0, ori2 = 0;
-  //static float acc0 = 0, acc1 = 0, acc2 = 0;
-  //static float vel0 = 0, vel1 = 0, vel2 = 0;
-  //printf("\n#i.max axis at 60%%: %.3f", get_cmap_f(-137, -1795547, 1795547, -6000, 6000));
-  #define DOF_MAG (10000)
+  #define DOF_MAG (1000.f)
   /* uses 10000 magnitude to not lose much fidelity on computation
                                 
                                 179.554748535156
   */
-  //int Mpkt[MFC_PKT_SIZE] = {1, 1,   50483,   43371,   1795547,   11451,   14847,   5426, 1};
-  // *!!!* careful with indexes as they need to correspond to the data pkt order
-  //                                     //pitch  //surge  //heave  //roll   //sway   //yaw     //trloss
-  //static float fv[MFCDASH_PKTSIZE];
   //game telemetry data
-  //static float posi[3], velo[3], roll[3], pitch[3], gforce[2];
   static float dof_roll, dof_pitch, dof_yaw, dof_heave, dof_sway, dof_surge, dof_tloss;
-  //static float safr, safl, sabr, sabl;
+  UDPPacket *tpkt = (UDPPacket*)packetBuffer;
+  //only when racing
+  static float phv = 0.0f; //heave - for road detail
+  static float pst = 0.0f; //front suspention travel - for road detail - not used
+  static float prlv = 0.0f;
+  static float pflv = 0.0f;
+  if (tpkt->lap_time == 0.0f)
+  {
+    //reset previous values as we start new race
+    pst = 0.0f;
+    prlv = 0.0f;
+    pflv = 0.0f;
+  }
   //
-        /*
-<float channel="roll" scale="1.0" />
-<float channel="pitch" scale="1.0" />
-<float channel="gforce_vertical" scale="1.0" />
-<float channel="yaw" scale="1.0" />
-<float channel="gforce_lateral" scale="1.0" />
-<float channel="gforce_longitudinal" scale="1.0" />
-<float channel="local_velocity_x" scale="1.0" />
-<float channel="speed" scale="1.0" />
-<float channel="gear" scale="1.0" />
-<float channel="engine_rate" scale="1.0" />
-<float channel="max_rpm" scale="1.0" />
-<float channel="paused" scale="1.0" />
-<float channel="race_position" scale="1.0" />
-<float channel="suspension_acceleration_fr" scale="1.0" />
-<float channel="suspension_acceleration_fl" scale="1.0" />
-<float channel="suspension_acceleration_br" scale="1.0" />
-<float channel="suspension_acceleration_bl" scale="1.0" />
-        */
-    //position at 4*4
-    dof_roll  = get_float (packetBuffer, 4 * 0);  //roll.ori2
-    dof_pitch = get_float (packetBuffer, 4 * 1);  //pitch.ori1
-    dof_heave = get_float (packetBuffer, 4 * 2);  //heave
-    dof_yaw   = get_float (packetBuffer, 4 * 3);  //yaw.ori0
-    dof_sway  = get_float (packetBuffer, 4 * 4);  //sway
-    dof_surge = get_float (packetBuffer, 4 * 5);  //surge
-    dof_tloss = get_float (packetBuffer, 4 * 6);  //traction loss computation
-    //safr      = get_float (packetBuffer, 4 * 13); //suspension_acceleration_fr
-    //safl      = get_float (packetBuffer, 4 * 14); //suspension_acceleration_fl
-    //sabr      = get_float (packetBuffer, 4 * 15); //suspension_acceleration_br
-    //sabl      = get_float (packetBuffer, 4 * 16); //suspension_acceleration_bl
-    //dash data
-    if (_dashaddr)
-    {
-      _dpkt[MFC_DISPD]  = (int)get_float (packetBuffer, 4 * 7);  //speed
-      _dpkt[MFC_DIGEAR] = (int)get_float (packetBuffer, 4 * 8);  //gear
-      _dpkt[MFC_DIRPM]  = (int)get_float (packetBuffer, 4 * 9) * 10;  //rpm x10
-      _dpkt[MFC_DIRPMM] = (int)get_float (packetBuffer, 4 * 10) * 10; //max rpm x10
-      //printf ("\n#i@%.3f:d1 rpm %d", cltime, _dpkt[MFC_DIRPM]);
-    }
-    //-
-    if (_odbg)
-      printf ("\n#i@%.3f:t1 pitch %f %f %f roll %f %f yaw %f %f", cltime,
-        dof_pitch, dof_surge, dof_heave, dof_roll, dof_sway, dof_yaw, dof_tloss);
-      //printf ("\n#i@%.3f:t1 pitch %f %f %f roll %f %f yaw %f %f sa %f %f %f %f", cltime,
-      //  dof_pitch, dof_surge, dof_heave, dof_roll, dof_sway, dof_yaw, dof_tloss, safr, safl, sabr, sabl);
-          //compute dofs here - not making much sense during testing..
-          /*
-        With MyOutsim_Internal
-            Roll_Output = ((.sngOrientation2 * 180 / 3.14159) - 90)
-            Pitch_Output = (.sngOrientation1 * 180 / 3.14159) * -1
-            Yaw_Output = (.sngOrientation0 * 180 / 3.14159)
-            Heave_Output = (System.Math.Cos(.sngOrientation2) * .sngAcceleration2)
-            Sway_Output = ((System.Math.Cos(.sngOrientation0) * .sngAcceleration0) + (System.Math.Sin(.sngOrientation0) * .sngAcceleration1))
-            Surge_Output = ((-System.Math.Sin(.sngOrientation0) * .sngAcceleration0) + (System.Math.Cos(.sngOrientation0) * .sngAcceleration1))
-            Extra1_Output = (((System.Math.Sin(.sngOrientation0) * .sngAcceleration0) + (System.Math.Sin(.sngOrientation0) * .sngAcceleration1)) * -1)
-        End With
-          */
-    dof_roll  = dof_roll * RAD2DEG;
-    dof_pitch = dof_pitch * RAD2DEG;
-    dof_yaw   = dof_yaw * RAD2DEG;
-    dof_heave = cos(dof_roll) * dof_heave;
-    dof_tloss = dof_tloss;// / GRAVACCEL;
-    if (_odbg)
-      printf ("\n#i@%.3f:t2 pitch %f %f %f roll %f %f yaw %f %f", cltime, 
-        dof_pitch, dof_surge, dof_heave, dof_roll, dof_sway, dof_yaw, dof_tloss);
-/**
-Pitch is the tilt of the car forwards or backwards in [°]
-Roll is how much the car is dipped to the left or right in [°]
-Yaw is the heading of the car (north, east, south, west) in [°]
-
-Surge means the acceleration of the car in longitudinal direction (front/back) [g]
-Sway means the acceleration of the car in lateral direction (left/right) [g]
-Heave means the acceleration up and down [g]
- * Yaw, roll and pitch inputs from orientation values
- * Sway, Surge, and Heave inputs from local acceleration values
- * local velocity provides traction loss
---when we have roll, yaw, pitch
-  Roll_Output = ((.sngOrientation2 * 180 / 3.14159) - 90)
-  Pitch_Output = (.sngOrientation1 * 180 / 3.14159) * -1
-  Heave_Output = (System.Math.Cos(.sngOrientation2) * .sngAcceleration2)
-  Yaw_Output = (.sngOrientation0 * 180 / 3.14159)
-  Sway_Output = ((System.Math.Cos(.sngOrientation0) * .sngAcceleration0) + (System.Math.Sin(.sngOrientation0) * .sngAcceleration1))
-  Surge_Output = ((-System.Math.Sin(.sngOrientation0) * .sngAcceleration0) + (System.Math.Cos(.sngOrientation0) * .sngAcceleration1))
-  Extra1_Output = (((System.Math.Sin(.sngOrientation0) * .sngAcceleration0) + (System.Math.Sin(.sngOrientation0) * .sngAcceleration1)) * -1)
-  -or-
-  roll = (roll * 180 / 3.14)
-  pitch = (pitch * 180 / 3.14) * -1
-  yaw = (yaw * 180 / 3.14)
-  heave = (cos(roll) * acceleration2)
-  sway = ((cos(yaw) * acceleration0) + (sin(yaw) * acceleration1))
-  surge = ((-sin(yaw) * acceleration0) + (cos(yaw) * acceleration1))
-  traction_loss = (((sin(yaw) * acceleration0) + (sin(yaw) * acceleration1)) * -1)
---
-  Dim RadtoDeg As Double = 45.0 / Atan(1)
-  Dim pitch As Single = -CSng(Atan2(-SimTele.mOriY.z, Sqrt((-SimTele.mOriX.z * -SimTele.mOriX.z) + (-SimTele.mOriZ.z * -SimTele.mOriZ.z)))) * radsToDeg
-  Dim yaw As Single = -CSng(Atan2(SimTele.mOriX.z, SimTele.mOriZ.z)) * radsToDeg
-  Dim roll As Single = CSng(Atan2(SimTele.mOriY.x, Sqrt((SimTele.mOriX.x * SimTele.mOriX.x) + (SimTele.mOriZ.x * SimTele.mOriZ.x)))) * radsToDeg
-  Dim speed As Single = CSng(Sqrt(SimTele.mLocalVel.x * SimTele.mLocalVel.x + SimTele.mLocalVel.y * SimTele.mLocalVel.y + SimTele.mLocalVel.z * SimTele.mLocalVel.z))
-  Roll_MemMap = roll
-  Pitch_MemMap = pitch
-  Heave_MemMap = SimTele.mLocalAccel.y
-  Yaw_MemMap = yaw
-  Sway_MemMap = -SimTele.mLocalAccel.x
-  Surge_MemMap = -SimTele.mLocalAccel.z
- * 
-A. right axis composition
-60p surge + 60p sway - 60p pitch - 60p roll - 20p heave
-//a. g-force - longitudinal(pitch) - overwrite
-//b. g-force - lateral(roll) - add
-
-B. right axis composition
-60p surge - 60p sway - 60p pitch + 60p roll - 20p heave
-//a. g-force - longitudinal(pitch) - overwrite
-//b. g-force - lateral(roll) * invert - add
-
-C. traction loss
-- 60p extra1 (local velocity x)
-*/
-/*
-  int pkt_type;
-  int pkt_dof_type;
-  int data[6];    //{pitch, roll, yaw, surge, sway, heave}
-  int speed;
+  float angs[3];
+  float fwd[3] = {tpkt->pitch_x, tpkt->pitch_z, tpkt->pitch_y};
+  float rgt[3] = {tpkt->roll_x, tpkt->roll_z, tpkt->roll_y};
+  anglesFromVectorsFwUp(angs, fwd, rgt);
+  float gf[3];
+  float vel[] = {tpkt->vel_x, tpkt->vel_z, tpkt->vel_y};
+  gforceFromVelocity(gf, vel);
+  //suspention travel for road texture
+  float stdt = tpkt->susp_vel_fr + tpkt->susp_vel_fl - pst;
+  pst = tpkt->susp_vel_fr + tpkt->susp_vel_fl;
+  //yaw or traction loss: accel / pkts-per-sec + previous velocity
+  float rlv = tpkt->g_force_lat / 60.0f + prlv; //getLVel4Accel(tpkt->m_gforce_lat, prlv);
+  prlv = rlv;
+  float flv = tpkt->g_force_lon / 60.0f + pflv;//getLVel4Accel(tpkt->m_gforce_lon, pflv);
+  pflv = flv;
+  //dofs
+  dof_pitch = -angs[PITCH];//rpy[1] * RAD2DEG;//MATH_PI * tpkt->rx * RAD2DEG; //raw rotation rx is -1..1 and needs PI to transform to radians
+  dof_surge = -tpkt->g_force_lon * (1.0f/9.81f);//gf[XX];//-G[1];//fa / GRAVACCEL; //from local acc to G
+  dof_sway  = tpkt->g_force_lat * (1.0f/9.81f);//gf[YY] * 100000.0f;//G[0];//ra / GRAVACCEL; //from local acc to G
+  dof_heave = -gf[ZZ];//G[2];//va / GRAVACCEL; //from local acc to G
+  dof_roll  = -angs[ROLL];//stdt;//angs[ROLL];//-rpy[0] * RAD2DEG;//MATH_PI * tpkt->rz * RAD2DEG;
+  dof_yaw   = angs[YAW];//(Vl[2]==0.0f)?0.0f:-(RAD2DEG * atanf(Vl[0] / abs(Vl[2])));//(MATH_PI * tpkt->ry) * RAD2DEG;
+  if (tpkt->lap_time > 0.0f)
+    dof_tloss = (flv==0.0f)?0.0f:-(RAD2DEG * atanf(rlv / abs(flv)));
+  else
+    dof_tloss = 0.0f;
   //
-Pitch is the tilt of the car forwards or backwards in [°]
-Roll is how much the car is dipped to the left or right in [°]
-Yaw is the heading of the car (north, east, south, west) in [°]
-
-Surge means the acceleration of the car in longitudinal direction (front/back) [g]
-Sway means the acceleration of the car in lateral direction (left/right) [g]
-Heave means the acceleration up and down [g]
-
-//motion data packet
-pkt[0] = PKTT_DATA;
-pkt[1] = PKTT_2DOF;
-//motion
-pkt[2] = pl_pitch;  //pitch
-pkt[3] = pl_roll;   //roll
-pkt[4] = 0;         //yaw
-pkt[5] = 0;         //surge
-pkt[6] = 0;         //sway
-pkt[7] = 0;         //heave
-//speed
-pkt[8] = (int)lrv;  //speed
-*/
-  // convert radian values to degrees
-  //_cpkt[MFC_PIPITCH]  = (int)(fv[MFC_PIPITCH] * DOF_MAG);
-  _cpkt[MFC_PIPITCH]  = (int)(dof_pitch * DOF_MAG);
-  //_cpkt[MFC_PIPITCH] = -get_cmap (pf_pitch, -100, 100, -1000, 1000);
-  //
-  // formula based, but wrong? -> fv[MFC_PISURGE] = (-sin(ori2) * acc0 + cos(ori2) * acc2) / 10.f;//acc1 * RAD2DEG;
-  //fv[MFC_PISURGE] = (cos(ori2) * acc2 + sin(ori2) * acc2) / 10.f;
-  _cpkt[MFC_PISURGE]  = (int)(dof_surge * DOF_MAG);
-  //_cpkt[MFC_PISURGE] = -get_cmap (pw_pitch, -32800, 32800, -7000, 7000);
-  //
-  // formula based, wrong -> fv[MFC_PIHEAVE] = (cos(ori2) * acc0) / 10.f;//acc2 * RAD2DEG;
-  //fv[MFC_PIHEAVE] = (cos(ori2) * acc0 + sin(ori2) * acc0) / 10.f;
-  _cpkt[MFC_PIHEAVE]  = (int)(dof_heave * DOF_MAG);
-  //_cpkt[MFC_PIHEAVE] = -get_cmap (pv_pitch, -128, 128, -2000, 2000);
-  //
-  //fv[MFC_PIROLL] = ori2 * RAD2DEG;
+  if (0 || _odbg)
+    printf ("\n#i@%.3f:tr %f fwd %f %f %f rgt %f %f %f ang %f %f %f", cltime, tpkt->lap_time,
+      tpkt->pitch_x, tpkt->pitch_y, tpkt->pitch_z, tpkt->roll_x, tpkt->roll_y, tpkt->roll_z, angs[ROLL], angs[PITCH], angs[YAW]);
+  if (0 || _odbg)
+    printf ("\n#i@%.3f:tr %f vel %f %f %f gf %f %f %f", cltime, tpkt->lap_time,
+      tpkt->vel_x, tpkt->vel_y, tpkt->vel_z, gf[ROLL], gf[PITCH], gf[YAW]);
+  if (0 || _odbg)
+    printf ("\n#i@%.3f:t0 %f pitch %f %f %f roll %f %f yaw %f %f", cltime, tpkt->lap_time,
+      dof_pitch, dof_surge, dof_heave, dof_roll, dof_sway, dof_yaw, dof_tloss);
+  _cpkt[MFC_PIPITCH] = (int)(dof_pitch * DOF_MAG);
+  _cpkt[MFC_PISURGE] = (int)(dof_surge * DOF_MAG);
+  _cpkt[MFC_PIHEAVE] = (int)(dof_heave * DOF_MAG);
   _cpkt[MFC_PIROLL]  = (int)(dof_roll * DOF_MAG);
-  //_cpkt[MFC_PIROLL]  = get_cmap (pf_roll, -128, 128, -7000, 7000);
-  //
-  //-formula based -> fv[MFC_PISWAY] = (cos(ori1) * acc1 + sin(ori1) * acc0) / 10.f;//acc0 * RAD2DEG;
-  //fv[MFC_PISWAY] = (cos(ori2) * acc1 + sin(ori2) * acc1) / 10.f;
   _cpkt[MFC_PISWAY]  = (int)(dof_sway * DOF_MAG);
-  //_cpkt[MFC_PISWAY]  = get_cmap (get_float (packetBuffer, local_accel_idx)*100, 8200, 8200, -3000, 3000);
-  //
-  //fv[MFC_PIYAW] = ori0 * RAD2DEG;
-  _cpkt[MFC_PIYAW]  = (int)(dof_yaw * DOF_MAG);
-  //
-  //fv[MFC_PITLOSS] = (sin(ori1) * acc1 + sin(ori1) * acc0);
-  //fv[MFC_PITLOSS] = velo[0] / 9.8f;
-  //fv[MFC_PITLOSS] = (sin(ori0) * acc1) / 10.f;
+  _cpkt[MFC_PIYAW]   = (int)(dof_yaw * DOF_MAG);
   _cpkt[MFC_PITLOSS] = (int)(dof_tloss * DOF_MAG);
-  //
   //
   if (_learn)
   {
@@ -572,16 +485,26 @@ pkt[8] = (int)lrv;  //speed
       for (int i = MFC_PITDAT + 1; i < MFC_PKTSIZE; ++i)
         printf ("\n#E:%d# [%d.. %d ..%d]", i, mpkt[i], _cpkt[i], Mpkt[i]);
   }
+  if (0 || _odbg)
+    printf ("\n#i@%.3f.t1 pitch%% %5d %5d %5d roll%% %5d %5d yaw%% %5d %5d", cltime,
+      _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
+      _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
+      _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
   //pitch
-  _cpkt[MFC_PIPITCH] = get_cmap_f (_cpkt[MFC_PIPITCH], mpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH], MFC_POS_MIN, MFC_POS_MAX);
-  _cpkt[MFC_PISURGE] = get_cmap_f (_cpkt[MFC_PISURGE], mpkt[MFC_PISURGE], Mpkt[MFC_PISURGE], MFC_POS_MIN, MFC_POS_MAX);
-  _cpkt[MFC_PIHEAVE] = get_cmap_f (_cpkt[MFC_PIHEAVE], mpkt[MFC_PIHEAVE], Mpkt[MFC_PIHEAVE], MFC_POS_MIN, MFC_POS_MAX);
+  _cpkt[MFC_PIPITCH] = get_cmap_f (_cpkt[MFC_PIPITCH], mpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+  _cpkt[MFC_PISURGE] = get_cmap_f (_cpkt[MFC_PISURGE], mpkt[MFC_PISURGE], Mpkt[MFC_PISURGE], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+  _cpkt[MFC_PIHEAVE] = get_cmap_f(_cpkt[MFC_PIHEAVE], mpkt[MFC_PIHEAVE], Mpkt[MFC_PIHEAVE], -MFC_HPOS_MAX, MFC_HPOS_MAX);
   //roll
-  _cpkt[MFC_PIROLL]  = get_cmap_f (_cpkt[MFC_PIROLL],  mpkt[MFC_PIROLL],  Mpkt[MFC_PIROLL], MFC_POS_MIN, MFC_POS_MAX);
-  _cpkt[MFC_PISWAY]  = get_cmap_f (_cpkt[MFC_PISWAY],  mpkt[MFC_PISWAY],  Mpkt[MFC_PISWAY], MFC_POS_MIN, MFC_POS_MAX);
+  _cpkt[MFC_PIROLL]  = get_cmap_f (_cpkt[MFC_PIROLL],  mpkt[MFC_PIROLL],  Mpkt[MFC_PIROLL], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+  _cpkt[MFC_PISWAY]  = get_cmap_f (_cpkt[MFC_PISWAY],  mpkt[MFC_PISWAY],  Mpkt[MFC_PISWAY], -MFC_HPOS_MAX, MFC_HPOS_MAX);
   //yaw
-  _cpkt[MFC_PIYAW]   = get_cmap_f (_cpkt[MFC_PIYAW],   mpkt[MFC_PIYAW],   Mpkt[MFC_PIYAW], MFC_POS_MIN, MFC_POS_MAX);
-  _cpkt[MFC_PITLOSS] = get_cmap_f (_cpkt[MFC_PITLOSS],   mpkt[MFC_PITLOSS],   Mpkt[MFC_PITLOSS], MFC_POS_MIN, MFC_POS_MAX);
+  _cpkt[MFC_PIYAW]   = get_cmap_f (_cpkt[MFC_PIYAW],   mpkt[MFC_PIYAW],   Mpkt[MFC_PIYAW], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+  _cpkt[MFC_PITLOSS] = get_cmap_f (_cpkt[MFC_PITLOSS], mpkt[MFC_PITLOSS], Mpkt[MFC_PITLOSS], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+  if (0 || _odbg)
+    printf ("\n#i@%.3f.t2 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", cltime,
+      _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
+      _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
+      _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
   //adjust %
   _cpkt[MFC_PIPITCH] = (float)_cpkt[MFC_PIPITCH] * _pitchprc;
   _cpkt[MFC_PISURGE] = (float)_cpkt[MFC_PISURGE] * _surgeprc;
@@ -592,17 +515,23 @@ pkt[8] = (int)lrv;  //speed
   //
   _cpkt[MFC_PIYAW]   = (float)_cpkt[MFC_PIYAW]   * _yawprc;
   _cpkt[MFC_PITLOSS] = (float)_cpkt[MFC_PITLOSS] * _trlossprc;
-  if (1 && _odbg)
+  if (0 || _odbg)
     printf ("\n#i@%.3f.t3 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", cltime,
       _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
       _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
       _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
   //share motion data
-  if(!_learn)
+  if (!_learn)
     mfc_bcast_send ();
-  //send dash data even when learning
+  //send dash data
   if (_dashaddr)
   {
+    //dash data
+    _dpkt[MFC_DISPD]  = (int)(tpkt->speed_ms * 2.24f);  //speed: 1 m/s, 3.60 kph - 1 m/s, 2.24 mph
+    _dpkt[MFC_DIGEAR] = (int)tpkt->gear;  //gear
+    _dpkt[MFC_DIRPM]  = (int)tpkt->rpm * 10;  //rpm x10
+    _dpkt[MFC_DIRPMM] = (int)tpkt->max_rpm * 10 - 1000; //max rpm x10
+    //printf ("\n#i@%.3f:d1 rpm %d rpmm %d rpmM %d", cltime, _dpkt[MFC_DIRPM], tpkt->mrpm, tpkt->Mrpm);
     memcpy(_dpkt, _cpkt, pktl);
     mfcdash_bcast_send ();
   }
@@ -623,6 +552,12 @@ int _lport = UDP_PORT;
 static void usage(char *app)
 {
   printf("%s %s\n", app, MFC_VERSION);
+  printf ("--scn output processing protocol specific to SCN5/6 controllers\n");
+  printf ("--arduino output processing protocol specific to Arduino controllers\n"\
+      "\t it uses the command model 'XL<bin-left-pos>CXR<bin-right-pos>C\n");
+  printf ("--kangaroo output processing protocol specific to Kangaroo controllers\n"\
+      "\t it uses the command model 'L,P<left-pos> S<left-speed>' and 'R,P<right-pos> S<right-speed>'\n");
+  printf ("\n");
 }
 
 int env_init (int argc, char *argv[])
@@ -647,6 +582,8 @@ int env_init (int argc, char *argv[])
     { "tyre-slip",required_argument, 0, 't' },
     { "use-dash", required_argument, 0, 'a' },
     { "listen-on",required_argument, 0, 'c' },
+    { "debug-data",required_argument, 0, 'D' },
+    { "motion-ip", required_argument, 0, 'm' },
     { 0, 0, 0, 0 }
   };
 
@@ -655,7 +592,7 @@ int env_init (int argc, char *argv[])
     /* getopt_long stores the option index here. */
     int option_index = 0;
 
-    c = getopt_long (argc, argv, "r:p:y:s:w:h:t:a:c:d:lhV?", long_options, &option_index);
+    c = getopt_long (argc, argv, "r:p:y:s:w:h:t:a:c:d:D:m:lhV?", long_options, &option_index);
 
     /* Detect the end of the options. */
     if (c == -1)
@@ -665,6 +602,9 @@ int env_init (int argc, char *argv[])
     case '?':
       usage (argv[0]);
       exit (0);
+      break;
+    case 'D': //roll
+      debug_data = atoi (optarg);
       break;
     case 'r': //roll
       _rollprc = atoi (optarg);
@@ -700,15 +640,23 @@ int env_init (int argc, char *argv[])
       break;
     case 'c': //listen port
       _lport = atoi (optarg);
+      break;
+    case 'm': //server address for telemetry data broadcast
+      if(inet_addr(optarg) <= 0)
+      {
+        printf("\n#E:invalid server address %s", optarg);
+        exit(-1);
+      }
+      _bcastaddr = optarg;
+      break;
     default:
       printf("unrecognized option: %c\n", c);
-      break;
     }
   }
 
   //configuration summary 
   printf ("\n# ##");
-  printf ("\n#MFC DIRT RALLY 2 client");
+  printf ("\n#MFC Dirt Rally 2 client");
   printf ("\n#running configuration:");
   printf ("\n#  pitch feedback %d%% (-p %d)", (int)_pitchprc, (int)_pitchprc);
   printf ("\n#   roll feedback %d%% (-r %d)", (int)_rollprc, (int)_rollprc);
@@ -725,7 +673,10 @@ int env_init (int argc, char *argv[])
     printf ("\n#            dash %s (-a %s)", _dashaddr, _dashaddr);
   else
     printf ("\n#            dash <not in use> (-a <ipv4>)");
+  printf ("\n#motion server IP %s (-m %s)", _bcastaddr?_bcastaddr:"127.0.0.1", _bcastaddr?_bcastaddr:"127.0.0.1");
   printf ("\n# ##");
+  //printf ("\n-- sizeof float %d", sizeof(float));
+  printf ("\n-- debug data %d", debug_data);
   //
   return 1;
 }
@@ -734,11 +685,16 @@ int main (int argc, char **argv, char **envp)
 {
   struct pollfd fdset[3];
   int nfds = 1;
-  int timeout, rc;
-  //unsigned int gpio;
+  int gpio_fd, timeout, rc;
+  unsigned int gpio;
+  int len;
 
   env_init (argc, argv);
   //
+  if (1)
+  {
+    printf("\n#i:pkt data size %d", sizeof(UDPPacket));
+  }
   int cs = mfc_bcast_prep ("127.0.0.1", 0);
   if (cs < 3)
   {
@@ -770,8 +726,7 @@ int main (int argc, char **argv, char **envp)
 #endif
   //sockets
   struct sockaddr_in si_other, si_me;
-  int s;//, slen = sizeof(si_other);
-  int pktsz = -1;
+  int s, i, slen = sizeof(si_other), pktk = 0, pktsz = 0;
   if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
   {
     printf ("\n#e:can't listen to game data on port %d, aborting", _lport);
@@ -798,6 +753,7 @@ int main (int argc, char **argv, char **envp)
   memset((char *) &si_other, 0, sizeof(si_other));
   si_other.sin_family = AF_INET;
   si_other.sin_port = htons(65001);
+  pktk = 990;
 #if 0
   if (inet_aton("127.0.0.1", &si_other.sin_addr)==0) {
     fprintf(stderr, "inet_aton() failed\n");
@@ -810,20 +766,21 @@ int main (int argc, char **argv, char **envp)
   ctime_ms (0);
   char fgamer = 1;  //game running or paused?
   //learning values
-  float cltime, rtime;
-  rtime = 0.0f;
-  cltime = -1.0f;
+  float lminl, lmaxl, lminr, lmaxr, ltime, cltime, rtime;
+  lminl = lmaxl = lminr = lmaxr = ltime = rtime = 0.0f;
+  ltime = cltime = -1.0f;
   //only send 3 PAUSEd packets
   (void) signal(SIGINT, terminate);
   (void) signal(SIGTERM, terminate);
   (void) signal(SIGHUP, terminate);
   //
   int ppkt = 0;
+  long lts = ctime_ms (0);
   char packetBuffer[UDP_MAX_PACKETSIZE];
   //
   _cpkt = mfc_bcast_pktget ();
   _dpkt = mfcdash_bcast_pktget ();
-  pktl  = mfc_bcast_pktlen ();
+  pktl = mfc_bcast_pktlen ();
   //send control packet with profile % configuration
   _cpkt[MFC_PITYPE] = PKTT_CTRL;
   _cpkt[MFC_PITDAT] = PKTC_PRCFG;
@@ -842,21 +799,9 @@ int main (int argc, char **argv, char **envp)
   //send dash data
   if (_dashaddr)
   {
-    /*
-    #i.got message 100001:
-    <00 00 00 00><02 00 00 00>
-    <e2 ff ff ff><1e 00 00 00><1e 00 00 00><ec ff ff ff>
-    <e2 ff ff ff><3c 00 00 00><c4 ff ff ff><64 00 00 00>
-    <64 00 00 00><64 00 00 00><00 00 00 00><00 00 00 00>
-    <00 00 00 00><00 00 00 00><00 00 00 00><00 00 00 00>
-    <00 00 00 00><00 00 00 00><00 00 00 00><00 00 00 00>
-    <00 00 00 00><00 00 00 00><00 00 00 00><00 00 00 00>
-    <00 00 00 00>
-    <44 69 72 74><20 52 61 6c><63 73 5b 66>
-    */
     memcpy(_dpkt, _cpkt, pktl);
     //set sim/app name
-    snprintf((char *)(_dpkt + MFC_DIAPP14), MFC_DIAPPSZ, "DirtRally2");
+    snprintf((char *)(_dpkt + MFC_DIAPP14), MFC_DIAPPSZ, "CM-DR2");
     mfcdash_bcast_send ();
   }
   _cpkt[MFC_PITYPE] = PKTT_DATA;
@@ -893,6 +838,7 @@ int main (int argc, char **argv, char **envp)
 
     if (rc == 0)
     {
+      lminl = lmaxl = lminr = lmaxr = 0.0f;
       printf(".");
       fflush (stdout);
       sleep (1);
@@ -900,42 +846,61 @@ int main (int argc, char **argv, char **envp)
 
     if (fdset[0].revents & POLLIN)
     {
-      int rlen = 0;//, idx;
+      int rlen = 0, idx;
+      //recvfrom(RecvSocket,  packetBuffer , SMS_UDP_MAX_PACKETSIZE, 0, (SOCKADDR *) & Sender, &SenderAddrSize);
+      //if ((rlen = recvfrom (s, (void *)&packetBuffer, SMS_UDP_MAX_PACKETSIZE, 0, (struct sockaddr*)&si_other, &slen))==-1)
       rlen = recvfrom (s, (void *)&packetBuffer, UDP_MAX_PACKETSIZE, 0, NULL, NULL);
-      cltime = (float)ctime_ms(0)/1000.0f;
+      cltime = get_fms();
       if (rlen > 0)
       {
-        char paused = (char)get_float (packetBuffer, 4 * 11); //custom paused/running
-        if (pktsz == -1)
+        //pkt timestamps
+        rtime = get_float (packetBuffer, 0);//run time
+        //ltime = get_float (packetBuffer, 4);//lap time - current
+        if (ltime == -1.0f)
         {
           //first packet ever
           pktsz = rlen;
-          printf ("\n#i@%f>%f:received pkt size %dbytes (%d fields)", cltime, rtime, pktsz, pktsz/4);
+          printf ("\n#i@%.3f>%f:received pkt size %dbytes (%d fields)", cltime, rtime, pktsz, pktsz/4);
         }
-        if (paused)
+        //process packet
+        mfc_packet_use (packetBuffer, rtime, cltime);
+        //game paused or running
+        if (rtime == ltime) //game paused
         {
           if (fgamer == 1)
           {
             fgamer = 0;
-            printf ("\n#i@%f:game paused", cltime);
+            printf ("\n#i@%.3f>%f:game paused", cltime, rtime);
+            //process packet once only
+            //mfc_packet_use (packetBuffer, rtime, cltime);
           }
         }
-        else
+        else //game running
         {
           if (fgamer == 0)
           {
             fgamer = 1;
-            printf ("\n#i@%f:game running", cltime);
+            printf ("\n#i@%.3f>%f:game running", cltime, rtime);
           }
-          mfc_packet_use (packetBuffer, rtime, cltime);
-          //
-          ppkt++;
-          if ((ppkt % 500) == 0)
-            printf ("\n#i@%f>%f:received %dpkts", cltime, rtime, ppkt);
-          //
-          if (0)
-            printf("\r\n@%f>%f:received %dB packet (vs %d) from %s:%d <",
-                    cltime, rtime, rlen, UDP_MAX_PACKETSIZE, inet_ntoa(si_other.sin_addr), ntohs(si_other.sin_port));
+          if (ltime == -1.0f)
+          {
+            //skip the first one
+            ltime = rtime;
+          }
+          else
+          {
+            ltime = rtime;
+            //process packet
+            //mfc_packet_use (packetBuffer, rtime, cltime);
+            //
+            ppkt++;
+            if ((ppkt % 500) == 0)
+              printf ("\n#i@%f>%f:received %dpkts", cltime, rtime, ppkt);
+            //
+            if (0)
+              printf("\r\n@%f>%f:received %dB packet (vs %d) from %s:%d <",
+                      cltime, rtime, rlen, UDP_MAX_PACKETSIZE, inet_ntoa(si_other.sin_addr), ntohs(si_other.sin_port));
+          }
         }
       } //rlen > 0
       if (rlen == -1)
@@ -946,19 +911,11 @@ int main (int argc, char **argv, char **envp)
     fflush (stdout);
   }
   //
+  //export learned values
   cltime = (float)ctime_ms(0)/1000.0f;
   if (_learn)
   {
     printf("\n#i:new min/Max values:");
-    //min
-    printf("\nstatic int mpkt[] = {");
-    for (int i = 0; i < MFC_PKTSIZE; ++i)
-    {
-      if (i > 0)
-        printf (", ");
-      printf ("%d", mpkt[i]);
-    }
-    printf("};");
     //Max
     printf("\nstatic int Mpkt[] = {");
     for (int i = 0; i < MFC_PKTSIZE; ++i)
@@ -968,8 +925,17 @@ int main (int argc, char **argv, char **envp)
       printf ("%d", Mpkt[i]);
     }
     printf("};");
+    //min
+    printf("\nstatic int mpkt[] = {");
+    for (int i = 0; i < MFC_PKTSIZE; ++i)
+    {
+      if (i > 0)
+        printf (", ");
+      printf ("%d", mpkt[i]);
+    }
+    printf("};");
   }
-  //
+  cltime = (float)ctime_ms(0)/1000.0f;
   printf("\n#i@%f:cleaning up.. done.\n", cltime);
   //
   close (s);

@@ -66,12 +66,20 @@ pkt[8] = 0;         //speed
 #define PKTCK_CKPT1 0xc0
 #define PKTCK_CKPT2 0xae
 //
-#define MFC_POS_MIN (-10000)
-#define MFC_POS_MAX (10000)
+#define MFC_POS_MIN  (-10000)
+#define MFC_POS_MAX  (10000)
 #define MFC_HPOS_MIN (-5000)
 #define MFC_HPOS_MAX (5000)
-#define MFC_WHL_MAX (32768)
+#define MFC_WHL_MIN  (-32768)
+#define MFC_WHL_MAX  (32768)
+#define MFC_HWHL_MIN (-16384)
 #define MFC_HWHL_MAX (16384)
+#define MFC_QWHL_MIN (-4096)
+#define MFC_QWHL_MAX (4096)
+#define MFC_BYTE_MIN (-127)
+#define MFC_BYTE_MAX (127)
+#define MFC_HBYTE_MIN (-64)
+#define MFC_HBYTE_MAX (64)
 
 //pkt control types, used with PKTT_CTRL
 #define PKTC_UNUSED  (0x00)
@@ -133,6 +141,13 @@ int appname[3];   //12 bytes for app name
 #define MATH_PI (3.14159f)
 #define RAD2DEG (57.2958279088f)  // 45/ATAN(1) or 180/3.14159
 #define GRAVACCEL (9.80665f)      //grav accel
+
+#define print_info(...) \
+            do { printf("\n#i."); printf(__VA_ARGS__); } while (0)
+#define print_warn(...) \
+            do { printf("\n#!."); printf(__VA_ARGS__); } while (0)
+#define print_errr(...) \
+            do { printf("\n#E."); printf(__VA_ARGS__); } while (0)
 
 int mfcdash_bcast_prep (char *dst, int svr);
 int mfcdash_bcast_send ();
@@ -213,6 +228,13 @@ float get_fms();
 //get delta time since the previous call
 unsigned int dtime_ms ();
 
+int set_max_prio ();
+
+//serial dash
+int serial_dash_open(char *_dashport, int spd);
+int sh_serial_write(int fd, char *buf, int blen);
+int dash_serial_write(int fd, char *_dpkt, int blen);
+
 void _check_bkey ( char *_bkey, char *_busr);
 // define a type using a typedef so that we can declare the externally
 // visible struct in this include file and then use the same type when
@@ -233,3 +255,14 @@ typedef struct {
 } FuncList;
 
 void mFLi (int);
+
+/*
+* Exponentially Weighted Moving Average filter
+* @params
+* [in]    dof - ROLL,PITCH,YAW..
+* [in]  input - current position value
+* [in] weigth - desired weigth
+* @returns input weighted value
+*/
+int mfc_ewmaf(int dof, int input, float wi);
+int mfc_ewmaf_set(int dof, int input);

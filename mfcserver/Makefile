@@ -15,13 +15,15 @@ LDLIBS += $(foreach library,$(program_LIBRARIES),-l$(library))
 .PHONY: all clean distclean
 
 install: $(program_NAME)
-	cp $(program_NAME) /opt/mfc/
+	mkdir -p /opt/mfc/mfcserver
+	cp $(program_NAME) /opt/mfc/mfcserver
+	cp ./race.sh /opt/mfc/mfcserver
+	cp ./race-t.sh /opt/mfc/mfcserver
 
 all: $(program_NAME)
 
 $(program_NAME): $(program_OBJS)
 	$(LINK.cc) $(program_OBJS) $(LDLIBS) -o $(program_NAME)
-	cp $(program_NAME) /opt/mfc/
 
 clean:
 	@- $(RM) $(program_NAME)

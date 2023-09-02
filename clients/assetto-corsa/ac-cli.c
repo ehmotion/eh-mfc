@@ -141,8 +141,7 @@ struct RTCarInfo
         float tyreRadius[4];
         float tyreLoadedRadius[4];
 
-
-float suspensionHeight[4];
+        float suspensionHeight[4];
 
         float carPositionNormalized;
 
@@ -248,9 +247,12 @@ static int mpkt[MFC_PKTSIZE] = {1, 1,  -127700,  -27465,  -68605,   -79686,  -20
 #i:new min/Max values:
 static int mpkt = [0, 0, -55789, -17792, -25177, -39887, -27095, -1793308, -83005, 0, 0, 0];
 static int Mpkt = [0, 0, 71807, 16820, 10602, 20307, 12984, 1795649, 94049, 100, 100, 100];
+#i:new min/Max values:
+static int mpkt[] = {0, 0, 0, -10652, -4007, 0, -9414, 0, 0, 0, 0, 0};
+static int Mpkt[] = {0, 0, 0, 4875, 5460, 0, 8459, 0, 0, 100, 100, 100};
 */
-static int mpkt[] = {0, 0, 0, -11182, -6779, 0, -11313, 0, 0, 0, 0, 0};
-static int Mpkt[] = {0, 0, 0, 4605, 14565, 0, 10878, 0, 0, 100, 100, 100};
+//static int mpkt[] = {0, 0, 0, -11182, 0, 0, -6779, -11313, 0, 0, 0, 0};
+//static int Mpkt[] = {0, 0, 0, 4605,   0, 0, 14565,  10878, 0, 100, 100, 100};
 /*
 static int mpkt[] = {0, 0, -55789, -17792, -25177, -39887, -27095, -1793308, -83005, 0, 0, 0};
 static int Mpkt[] = {0, 0, 71807, 16820, 10602, 20307, 12984, 1795649, 94049, 100, 100, 100};
@@ -281,9 +283,9 @@ int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
   //
   dof_pitch = 0;//-get_float (packetBuffer, VERT_IDX + 8);
   dof_surge = tpkt->accG_frontal;//get_float (packetBuffer, LONG_IDX);
-  dof_heave = tpkt->accG_horizontal;//get_float (packetBuffer, VERT_IDX);
+  dof_heave = tpkt->accG_vertical;//get_float (packetBuffer, VERT_IDX);
   dof_roll = 0;//-get_float (packetBuffer, HORI_IDX + 4);
-  dof_sway = tpkt->accG_vertical;//get_float (packetBuffer, HORI_IDX);
+  dof_sway = tpkt->accG_horizontal; //get_float (packetBuffer, HORI_IDX);
   dof_yaw = 0; //get_float (packetBuffer, HORI_IDX); //TODO: compute direction
   dof_tloss = (int)(0 * DOF_MAG);
   //
@@ -326,24 +328,23 @@ int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
   //pitch
   _cpkt[MFC_PIPITCH] = 0;//get_cmap_f (_cpkt[MFC_PIPITCH], mpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH], -MFC_HPOS_MAX, MFC_HPOS_MAX);
   _cpkt[MFC_PISURGE] = get_cmap_f (_cpkt[MFC_PISURGE], mpkt[MFC_PISURGE], Mpkt[MFC_PISURGE], -MFC_HPOS_MAX, MFC_HPOS_MAX);
-  _cpkt[MFC_PIHEAVE] = get_cmap_f (_cpkt[MFC_PIHEAVE], mpkt[MFC_PIHEAVE], Mpkt[MFC_PIHEAVE], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+  _cpkt[MFC_PIHEAVE] = 0;//get_cmap_f(_cpkt[MFC_PIHEAVE], mpkt[MFC_PIHEAVE], Mpkt[MFC_PIHEAVE], -MFC_HPOS_MAX, MFC_HPOS_MAX);
   //roll
   _cpkt[MFC_PIROLL]  = 0;//get_cmap_f (_cpkt[MFC_PIROLL],  mpkt[MFC_PIROLL],  Mpkt[MFC_PIROLL], -MFC_HPOS_MAX, MFC_HPOS_MAX);
   _cpkt[MFC_PISWAY]  = get_cmap_f (_cpkt[MFC_PISWAY],  mpkt[MFC_PISWAY],  Mpkt[MFC_PISWAY], -MFC_HPOS_MAX, MFC_HPOS_MAX);
   //yaw
-  _cpkt[MFC_PIYAW]   = 0;//get_cmap_f (_cpkt[MFC_PIYAW],   mpkt[MFC_PIYAW],   Mpkt[MFC_PIYAW], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+  _cpkt[MFC_PIYAW]   = get_cmap_f (_cpkt[MFC_PIYAW],   mpkt[MFC_PIYAW],   Mpkt[MFC_PIYAW], -MFC_HPOS_MAX, MFC_HPOS_MAX);
   _cpkt[MFC_PITLOSS] = 0;//get_cmap_f (_cpkt[MFC_PITLOSS], mpkt[MFC_PITLOSS], Mpkt[MFC_PITLOSS], -MFC_HPOS_MAX, MFC_HPOS_MAX);
   //adjust %
   //_cpkt[MFC_PIPITCH] = (float)_cpkt[MFC_PIPITCH] * _pitchprc;
   _cpkt[MFC_PISURGE] = (float)_cpkt[MFC_PISURGE] * _surgeprc;
-  _cpkt[MFC_PIHEAVE] = (float)_cpkt[MFC_PIHEAVE] * _heaveprc;
   //
   //_cpkt[MFC_PIROLL]  = (float)_cpkt[MFC_PIROLL]  * _rollprc;
   _cpkt[MFC_PISWAY]  = (float)_cpkt[MFC_PISWAY]  * _swayprc;
   //
-  //_cpkt[MFC_PIYAW]   = (float)_cpkt[MFC_PIYAW]   * _yawprc;
+  _cpkt[MFC_PIYAW]   = (float)_cpkt[MFC_PIYAW] * _yawprc;
   //_cpkt[MFC_PITLOSS] = (float)_cpkt[MFC_PITLOSS] * _trlossprc;
-  if (1 && _odbg)
+  if (1 || _odbg)
     printf ("\n#i@%.3f.t3 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", cltime,
       _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
       _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 

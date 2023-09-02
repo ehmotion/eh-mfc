@@ -30,6 +30,10 @@
 #define debug_print(fmt, ...) \
             do { if (DEBUG) fprintf(stderr, fmt, __VA_ARGS__); } while (0)
 
+#define DEBUG_1 1
+#define tslog_printf(...) \
+            do { if (DEBUG_1) { printf ("\n#%.3f:", get_fms()); printf(__VA_ARGS__); } } while (0)
+
 int inet_aton (const char *cp, struct in_addr *inp);
 //int usleep(long usec);
 #if 0
@@ -137,14 +141,15 @@ float _extra2prc = 100.0f;
 float _extra3prc = 100.0f;
 //
 char *_dashaddr = NULL;
+char *_bcastaddr = NULL;
 //
 char _odbg = 0;
 char _mot = 0;        //don't process motion
 //capture/debug
 char _cap = 0;
 #define CAP_FFB 0x02
-#define CAP_WHL 0x04
-#define CAP_ALL 0x06
+#define CAP_WHL 0x01
+#define CAP_ALL 0x03
 char _fil = 0;        //capture in/out data to file
 #define SWAY_CUTOFF   64
 //act as a toy: use wheel input to control the platform
@@ -164,9 +169,9 @@ typedef struct {
 
 proc_list _procs[] = {
     {"0000:0000", "!Dummy",       motion_process_dummy},
-    {"0eb7:0e04", "Fanatec",      motion_process_fanatec},
-    {"046d:c260", "Logitech",     motion_process_logitech},
-    {"044f:b66d", "Thrustmaster", motion_process_thrustmaster},
+    {"0eb7:0e04", "fanatec",      motion_process_fanatec},
+    {"046d:c260", "logitech",     motion_process_logitech},
+    {"044f:b66d", "thrustmaster", motion_process_thrustmaster},
 };
 int _p_idx = 0; //dummy
 //
@@ -174,6 +179,17 @@ char *_pdev = NULL;    //device used to extract USB data
 static int *_cpkt = NULL;
 static int _cpktl = 0;
 static int *_dpkt = NULL;
+
+float mfc_intensity = 15.0f / 100.0f; //20% default intensity
+int mfc_fltoutpos[MFC_PKTSIZE];
+//Exponentially Weighted Moving Average filter
+int mfc_ewmaf(int dof, int input, float wi)
+{
+  if (dof < 0 || dof >= MFC_PKTSIZE)
+    return input;
+  mfc_fltoutpos[dof] = (int)(wi * (float)(input - mfc_fltoutpos[dof])) + mfc_fltoutpos[dof];
+  return mfc_fltoutpos[dof];
+}
 
 static void usage()
 {
@@ -205,6 +221,7 @@ int env_init (int argc, char *argv[])
     { "version",  no_argument,       0, 'V' },
     { "debug",    required_argument, 0, 'D' },
     { "capture",  required_argument, 0, 'c' },
+    { "intensity",required_argument, 0, 'i' },
     //
     { "roll",     required_argument, 0, 'r' },
     { "pitch",    required_argument, 0, 'p' },
@@ -215,10 +232,11 @@ int env_init (int argc, char *argv[])
     //
     { "tyre-slip",required_argument, 0, 't' },
     { "use-dash", required_argument, 0, 'a' },
+    { "motion-ip",required_argument, 0, 'm' },
     //
     { "fanatec",      no_argument,   0, 'f' },
     { "logitech",     no_argument,   0, 'g' },
-    { "thrustmaster", no_argument,   0, 'm' },
+    { "thrustmaster", no_argument,   0, 'u' },
     //{ "dummy",   no_argument,       0, 'y' },
     { 0, 0, 0, 0 }
   };
@@ -228,7 +246,7 @@ int env_init (int argc, char *argv[])
     /* getopt_long stores the option index here. */
     int option_index = 0;
 
-    c = getopt_long (argc, argv, "a:c:r:p:y:s:w:h:l:HVD:fgt:", long_options, &option_index);
+    c = getopt_long (argc, argv, "a:c:r:p:y:s:w:h:l:i:HVD:fgut:m:", long_options, &option_index);
 
     /* Detect the end of the options. */
     if (c == -1)
@@ -239,6 +257,14 @@ int env_init (int argc, char *argv[])
     case 'H':
       usage ();
       exit (0);
+      break;
+    case 'i': //intensity 0 .. 100%
+      mfc_intensity = (float)atoi (optarg);
+      if (mfc_intensity < 1.0f)
+        mfc_intensity = 1.0f;
+      if (mfc_intensity > 100.0f)
+        mfc_intensity = 100.0f;
+      mfc_intensity = mfc_intensity / 100.0f;
       break;
     //profiling params
     case 'r': //roll %
@@ -275,7 +301,20 @@ int env_init (int argc, char *argv[])
     case 't': //tyre slip/traction loss
       _trlossprc = atoi (optarg);
       break;
+    case 'm': //server address for telemetry data broadcast
+      if(inet_addr(optarg) <= 0)
+      {
+        printf("\n#E:invalid server address %s", optarg);
+        exit(-1);
+      }
+      _bcastaddr = optarg;
+      break;
     case 'a': //use dash to forward data
+      if(inet_addr(optarg) <= 0)
+      {
+        printf("\n#E:invalid dash address %s", optarg);
+        exit(-1);
+      }
       _dashaddr = optarg;
       break;
     case 'f': //fanatec device
@@ -284,7 +323,7 @@ int env_init (int argc, char *argv[])
     case 'g': //logitech device
       _p_idx = 2;
       break;
-    case 'm': //thrustmaster device
+    case 'u': //thrustmaster device
       _p_idx = 3;
       break;
     case 'D': //debug
@@ -295,7 +334,7 @@ int env_init (int argc, char *argv[])
       _cap = atoi (optarg);
       //if (_cap == 0)
       //  _cap = CAP_FFB | CAP_WHL;
-      printf ("\n#i.cap %d", _cap);
+      //printf ("\n#i.cap %d", _cap);
       break;
     case 'V':
       printf("mfcxtract %s\n", MFC_VERSION);
@@ -325,16 +364,18 @@ int env_init (int argc, char *argv[])
   //printf ("\n#shifter feedback %d (-s%d) range [1..10]", _shiftspd, _shiftspd);
   //printf ("\n#vibrat. feedback %d (-v%d) range [1..10]", _vibfbk, _vibfbk);
   printf ("\n#  pitch feedback %d%% (-p %d) - pedals input", (int)_pitchprc, (int)_pitchprc);
-  printf ("\n#   roll feedback %d%% (-r %d) - steering input", (int)_rollprc, (int)_rollprc);
+  printf ("\n#   roll feedback %d%% (-r %d) - FFB wheel pos", (int)_rollprc, (int)_rollprc);
   printf ("\n#    yaw feedback %d%% (-y %d) - steering input", (int)_yawprc, (int)_yawprc);
   printf ("\n#  surge feedback %d%% (-s %d) - gear shift", (int)_surgeprc, (int)_surgeprc);
-  printf ("\n#   sway feedback %d%% (-w %d) - FFB wheel pos", (int)_swayprc, (int)_swayprc);
+  printf ("\n#   sway feedback %d%% (-w %d) - FFB wheel pos delta", (int)_swayprc, (int)_swayprc);
   printf ("\n#  heave feedback %d%% (-h %d) - revs/engine", (int)_heaveprc, (int)_heaveprc);
   printf ("\n#   slip feedback %d%% (-t %d) - computed", (int)_trlossprc, (int)_trlossprc);
   printf ("\n# verbosity level %4d (-D %d)", _odbg, _odbg);
-  printf ("\n#    capture mode %s   (-c)", _cap?((_cap&CAP_ALL)==CAP_ALL?"all":(_cap&CAP_FFB?"ffb":"whl")):"off");
-  printf ("\n#motion processor %s", _procs[_p_idx].pdv);
+  printf ("\n#    capture mode %s   (-c [1:whl|2:ffb|3:all])", _cap?((_cap&CAP_ALL)==CAP_ALL?"all":(_cap&CAP_FFB?"ffb":"whl")):"off");
+  printf ("\n#motion processor %s (--%s)", _procs[_p_idx].pdv, _procs[_p_idx].pdv);
   printf ("\n#motion frequency %ums (-l%u) (ms)", (unsigned int)_nlat, (unsigned int)_nlat);
+  printf ("\n#output intensity %d%%", (int)(mfc_intensity * 100.0f));
+  printf ("\n#motion server IP %s (-m %s)", _bcastaddr?_bcastaddr:"127.0.0.1", _bcastaddr?_bcastaddr:"127.0.0.1");
   if (_dashaddr)
     printf ("\n#            dash %s (-a %s)", _dashaddr, _dashaddr);
   else
@@ -362,7 +403,8 @@ int max_accel = 0;
 int pl_roll, pl_pitch = 0;  //entire platform roll/pitch
 //platform acceleration leveling
 int pw_roll, pw_pitch = 0;  //wheel forces
-int pf_roll, pf_rolld, pf_pitch = 0, pf_tloss = 0;  //ffb forces
+int pf_roll, pf_rolld, pf_pitch = 0; //ffb forces
+int pf_trlossd = 0, pf_trlossp = 0, pp_trloss = 0, pf_damper = 0; //used to compute traction loss delta
 int pv_roll = 0;  //vibration forces
 int pv_pitch = 0;
 int pw_heave = 0, pw_heave_dir = 1; //used for heave 'boating' effect
@@ -374,9 +416,18 @@ int vib_k = 0;
 int pw_acc = 0, pw_brk = 0, pw_revs = 0;
 static int extractor_update ()
 {
+  static int trloss_drop = 0;
   //update extractor logic as needed
   pw_pitch = accel_pitch_get (pw_acc, pw_brk, pw_revs);
   //pw_pitch = accel_pitch_get(lpacc, lpbrk, revsk);
+  //recenter traction loss position
+  trloss_drop = pp_trloss / 8;
+  if (pp_trloss > 0)
+    pp_trloss -= trloss_drop?trloss_drop:1;
+  else if (pp_trloss < 0)
+    pp_trloss += trloss_drop?-trloss_drop:1;
+  if (0 && pp_trloss)
+    printf ("\n#d.TRL3 with %d", pp_trloss);
   //
   return 0;
 }
@@ -404,13 +455,13 @@ int main (int argc, char **argv, char **envp)
     _dpkt = mfcdash_bcast_pktget ();
   }
   //MFC server connection
-  cs = mfc_bcast_prep ("127.0.0.1", 0);
+  cs = mfc_bcast_prep (_bcastaddr?_bcastaddr:"127.0.0.1", 0);
   if (cs < 3)
   {
     printf ("\n#e:can't connect to MFC server on port %d", MFCSVR_PORT);
     exit(1);
   }
-  printf ("\n#i:<%d:MFC server on port %d", cs, MFCSVR_PORT);
+  printf ("\n#i:<%d:MFC server at %s:%d", cs, _bcastaddr?_bcastaddr:"127.0.0.1", MFCSVR_PORT);
   if (_cpkt == NULL)
   {
     _cpkt = mfc_bcast_pktget ();
@@ -479,7 +530,7 @@ int main (int argc, char **argv, char **envp)
   int ppkt = 1;
   char packetBuffer[UDP_MAX_PACKETSIZE];
   //
-  int rlen = 0, tmoknt = 0;
+  int rlen = 0, tmoknt = 0, tmonet = 0;
   int ndts = -1, ldts = dtime_ms ();
   int ppid = 0, vvid = 0;
   int lts = ctime_ms(0);
@@ -551,15 +602,21 @@ int main (int argc, char **argv, char **envp)
     //timeout
     if (rc == 0)
     {
-      //called every 5 millis
+      //called every 20 millis normally
       tmoknt++;
-      if (tmoknt >= 1000)
+      if (tmoknt >= 5000/_nlat)
       {
         printf(".");
         fflush (stdout);
         tmoknt = 0;
+        tmonet = 1; //we didn't get any data in a while
       }
       //sleep (1);
+    }
+    else
+    {
+      tmoknt = 0; //reset timeout counter
+      tmonet = 0;
     }
     //take the time
     ms_now = lts;//(unsigned int)get_millis();
@@ -626,7 +683,7 @@ int main (int argc, char **argv, char **envp)
                 ldts = ndts;
                 ndts = -1;  //reset network ts as we need another
               }
-              fprintf (stdout, "\n#i.FFB@%04d: ", ldts);
+              fprintf (stdout, "\n#i.FFB@%.3f: ", get_fms());
               for (i = 0; i < rlen; i++)
                 fprintf (stdout, "%02x ", packetBuffer[i]);
             }
@@ -641,7 +698,7 @@ int main (int argc, char **argv, char **envp)
                 ldts = ndts;
                 ndts = -1;  //reset network ts as we need another
               }
-              fprintf (stdout, "\n#i.WHL@%04d: ", ldts);
+              fprintf (stdout, "\n#i.WHL@%.3f: ", get_fms());
               for (i = 0; i < rlen; i++)
                 fprintf (stdout, "%02x ", packetBuffer[i]);
             }
@@ -677,14 +734,19 @@ int main (int argc, char **argv, char **envp)
           _nlat, _cpkt[MFC_PIPITCH], _cpkt[MFC_PIROLL]);
       //inc motion packets
       //mpktt++;
-      //send the packet
-      //_cpkt[MFC_PISPEED] = ms_now;  //hide the timestamp here, for future ref
-      mfc_bcast_send ();
-      if (_dashaddr)
+      //send the packet if we get data from the extractor
+      //let's hope we get some messages in the mean time
+      // otherwise only send a packet every once in a while
+      if (!tmonet || tmoknt == 0)
       {
-        memcpy(_dpkt, _cpkt, pktl);
-        //
-        mfcdash_bcast_send ();
+        //_cpkt[MFC_PISPEED] = ms_now;  //hide the timestamp here, for future ref
+        mfc_bcast_send ();
+        if (_dashaddr)
+        {
+          memcpy(_dpkt, _cpkt, pktl);
+          //
+          mfcdash_bcast_send ();
+        }
       }
       //
       motion_reset (ms_now - ms_mot);
@@ -779,6 +841,8 @@ static int accel_pitch_get(int acc, int brk, int revs)
   if (acc <= 0)
   {
     ptch = 0;
+    if (0)
+      printf("\n#d.acc %d ptch %d ", acc, ptch);
     //
     kntr = 0;
     lidx = 0;
@@ -818,6 +882,9 @@ static int accel_pitch_get(int acc, int brk, int revs)
         ptch = get_cmap(kntr % fdt, 0, fdt, ptch, ptchn);
       else
         ptch = get_cmap(kntr % fdt, fdt, 0, ptchn, ptch);
+      if (0 && ptch == 0)
+        printf("\n#d.kntr %d fdt %d mod %d from %d (%d) to %d (%d)", kntr, fdt,
+          kntr % fdt, ptch, acc_map[lidx][1], ptchn, acc_map[lidx + 1][1]);
       #if 0
       int dpt = (acc_map[lidx + 1][1] * MFC_WHL_MAX / 100) - ptch;
       //going up or down?
@@ -861,7 +928,7 @@ static int motion_reset (unsigned int mdt)
 
 static int motion_compute (unsigned int mdt)
 {
-  static int sway_flag = 1;
+  //static int sway_flag = 1;
   //int lpw_roll;
   /*
   * wheel roll should cap at -16k..+16k
@@ -891,11 +958,11 @@ YAW	Yaw is the heading of the car (north, east, south, west) in [°]         //c
   //--motion
   //>PITCH
   //pedals-based pitch
-  _cpkt[MFC_PIPITCH] = -get_cmap (pw_pitch, -MFC_WHL_MAX, MFC_WHL_MAX, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  _cpkt[MFC_PIPITCH] = -get_cmap (pw_pitch, MFC_WHL_MIN, MFC_WHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
   //gear changes
   _cpkt[MFC_PISURGE] = -get_cmap (pf_pitch, -100, 100, MFC_HPOS_MIN, MFC_HPOS_MAX);
   //revs jolt, others, pv_pitch
-  _cpkt[MFC_PIHEAVE] = -get_cmap (pv_pitch, -128, 128, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  _cpkt[MFC_PIHEAVE] = -get_cmap (pv_pitch, MFC_BYTE_MIN, MFC_BYTE_MAX, MFC_HPOS_MIN, MFC_HPOS_MAX);
   //>ROLL
   //ffb roll
   //if (_toyfd > 0)
@@ -905,16 +972,26 @@ YAW	Yaw is the heading of the car (north, east, south, west) in [°]         //c
   //}
   //else
   //steering wheel input for ROLL
-  _cpkt[MFC_PIROLL] = get_cmap (pw_roll, -MFC_HWHL_MAX, MFC_HWHL_MAX, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  //_cpkt[MFC_PIROLL] = get_cmap (pw_roll, -MFC_HWHL_MAX, MFC_HWHL_MAX, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  _cpkt[MFC_PIROLL] = get_cmap (pf_roll, MFC_WHL_MIN, MFC_WHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
   //printf ("\n#p.roll1 %d", _cpkt[MFC_PIROLL]);
   //force feedback input for sway
   //lpw_roll = get_cmap (pw_roll, -MFC_HWHL_MAX/2, MFC_HWHL_MAX/2, -MFC_HPOS_MAX/2, MFC_HPOS_MAX/2);
   //_cpkt[MFC_PISWAY]  = get_cmap (pf_roll, -128, 128, MFC_POS_MIN, MFC_POS_MAX);
-  _cpkt[MFC_PISWAY]  = get_cmap (pf_rolld, -128, 128, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  _cpkt[MFC_PISWAY]  = get_cmap (pf_rolld, MFC_HWHL_MIN, MFC_HWHL_MAX, MFC_HPOS_MIN, MFC_HPOS_MAX);
   //>YAW
   //steering direction
-  _cpkt[MFC_PIYAW]  = get_cmap (pw_roll, -MFC_HWHL_MAX, MFC_HWHL_MAX, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  _cpkt[MFC_PIYAW] = get_cmap (pf_roll, -MFC_WHL_MAX, MFC_WHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
+  //_cpkt[MFC_PIYAW]  = get_cmap (pw_roll, MFC_QWHL_MIN, MFC_QWHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
+  //trloss
+  _cpkt[MFC_PITLOSS] = get_cmap (pp_trloss, MFC_WHL_MIN, MFC_WHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
+  if (0)
+    printf ("\n#i@%.3f.t1 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", get_fms(),
+      _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
+      _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY],
+      _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
   //traction loss when wheel pos command follows wheel pos
+  #if 0
   if (abs (pf_rolld) > 1) 
   {
     if (pf_tloss)
@@ -936,11 +1013,12 @@ YAW	Yaw is the heading of the car (north, east, south, west) in [°]         //c
       //printf ("\n#d.start TRL on %d with %d", pf_rolld, pf_tloss);
     }
   }
+  #endif
   //yaw move: traction loss and strong ffb
-  _cpkt[MFC_PITLOSS] = get_cmap (pf_tloss, -128, 128, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  //_cpkt[MFC_PITLOSS] = 0;//get_cmap (pf_tloss, -128, 128, MFC_HPOS_MIN, MFC_HPOS_MAX);
   //
   if (0 && _cpkt[MFC_PITLOSS])
-    printf ("\n#d.tr loss %d on TRL %d with %d", _cpkt[MFC_PITLOSS], pf_rolld, pf_tloss);
+    printf ("\n#d.tr loss %d on TRL %d with %d", _cpkt[MFC_PITLOSS], pf_rolld, pp_trloss);
   //
   if (0)
     printf ("\n#i@%04d.t1 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", mdt,
@@ -958,12 +1036,28 @@ YAW	Yaw is the heading of the car (north, east, south, west) in [°]         //c
   _cpkt[MFC_PIYAW]   = (float)_cpkt[MFC_PIYAW]   * _yawprc;
   //
   _cpkt[MFC_PITLOSS] = (float)_cpkt[MFC_PITLOSS] * _trlossprc;
-  if (0)
-    printf ("\n#i@%04d.t2 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", mdt,
+  if (0||_odbg)
+    printf ("\n#i@%.3f.t2 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", get_fms(),
       _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
       _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY],
       _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
+  //do exponentially weighted moving average values here
+  //_cpkt[MFC_PIPITCH] = mfc_ewmaf(MFC_PIPITCH, _cpkt[MFC_PIPITCH], mfc_intensity);
+  //_cpkt[MFC_PISURGE] = mfc_ewmaf(MFC_PISURGE, _cpkt[MFC_PISURGE], mfc_intensity);
+  //_cpkt[MFC_PIHEAVE] = mfc_ewmaf(MFC_PIHEAVE, _cpkt[MFC_PIHEAVE], mfc_intensity);
   //
+  _cpkt[MFC_PIROLL]  = mfc_ewmaf(MFC_PIROLL, _cpkt[MFC_PIROLL], mfc_intensity);
+  _cpkt[MFC_PISWAY]  = mfc_ewmaf(MFC_PISWAY, _cpkt[MFC_PISWAY], mfc_intensity);
+  _cpkt[MFC_PITLOSS] = mfc_ewmaf(MFC_PITLOSS, _cpkt[MFC_PITLOSS], mfc_intensity);
+  //
+  //_cpkt[MFC_PIYAW] = mfc_ewmaf(MFC_PIYAW, _cpkt[MFC_PIYAW], mfc_intensity);
+  //
+  //_cpkt[MFC_PITLOSS] = mfc_ewmaf(MFC_PITLOSS, _cpkt[MFC_PITLOSS], mfc_intensity);
+  if (0||_odbg)
+    printf ("\n#i@%.3f.t3 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", get_fms(),
+      _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
+      _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY],
+      _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
   return 1;
 }
 
@@ -1574,6 +1668,8 @@ static char ff_fan_check_led_digit (char byte)
       return '6';
     case 0x07:
       return '7';
+    case 0x77:  //R
+      return 'r';
     case 0x7f:
       return '8';
     case 0x6f:
@@ -1588,7 +1684,8 @@ static char ff_fan_check_led_digit (char byte)
   return '*';
 }
 
-static int revsk = 0;      //count rev leds that are lit
+//count rev leds that are lit on wheel base and wheel rim
+static int revsk = 0, revsk2 = 0;
 //#i.WHL@0000: 06 4c 00 0e b7 0e 04 2d 6f dc 06 06 41 00 84 01 80 80 7f 80 08 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 e5 81 00 00 ff ff ff ff 00 ff ff 00 00 00 00 00 00 00 00 00 00                     
 //#i.WHL@0000: 06 4c 00 - envelope header
 //  0e b7 0e 04 - vid+pid
@@ -1632,6 +1729,16 @@ typedef struct PACKED {
   uint8_t pad4[10];  //idx 56
 } fanatec_whl;
 
+static void dump_ffb(int idx, char *report, int rlen)
+{
+  char *ffbdata = report + 5; //3 for header, 1 for endpoint id, 1 for ?msgid?
+  fprintf (stdout, "\n#i.FFB2/%04dB:", rlen);
+  for (int i = 0; i < rlen; i++)
+    fprintf (stdout, " %02x", report[i]);
+  if (1)
+    ff_lg_decode_command ((const unsigned char *)ffbdata);
+}
+
 int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
 {
   //update delta time
@@ -1640,19 +1747,21 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
   _wd = 'U';
   //ffb wheel pos: ffb roll
   //static int lwpos = 127, cwpos = 127, revs = 0; //wheel center pos default
-  static int cgear = 0;     //current gear  - from 7seg digits
-  static int csped = 0;     //current speed - from 7seg digits
-  static int rollp = 0;     //previous roll target for computing roll delta used in traction loss
+  static int  cgear = 0;     //current gear  - from 7seg digits
+  static int  csped = 0;     //current speed - from 7seg digits
+  static int  pf_rollp = 0;  //previous roll target for computing roll delta used in traction loss
+  static char pfhr = 0;     //platform pos hi res roll for FFB that supports 0..65535 pos
 #if 1
   static char max_revs = 0; //overrev jolt and rev-based pitch
-  //max revs
-  if (revsk == 9)
+  //max revs wheel base leds OR wheel rim leds
+  if (revsk == 9 || revsk2 == 9)
   {
     max_revs = ~max_revs;
     if (max_revs)
       pv_pitch = pf_shiftspd/2;
     else
       pv_pitch = 0;
+    //printf("\n#i@%.3f:pv_pitch %d", get_fms(), pv_pitch);
   }
 #endif
   //
@@ -1675,12 +1784,6 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
     {
       //
       _wd = 'F';
-      if (0)
-      {
-        fprintf (stdout, "\n#i.FFB2@%04d:", rlen);
-        for (int i = 0; i < rlen; i++)
-          fprintf (stdout, " %02x", report[i]);
-      }
       //+FFB command decode
       //#i.FFB@0001: 07 4c 00 0e b7 0e 04 1e 6f dc 06 07 41 00 03 30 01 08 84 84 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
       //  DOWNLOAD_AND_PLAY  - VARIABLE - 0x84 0x84 0x00 0x00 0x01
@@ -1696,7 +1799,13 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
       //  DOWNLOAD_AND_PLAY - VARIABLE - 0x84 0x84 0x00 0x00 0x01
       char *ffbdata = report + 5; //3 for header, 1 for endpoint id, 1 for ?msgid?
       if (0 || _cap&CAP_FFB || _odbg)
-        ff_lg_decode_command ((const unsigned char *)ffbdata);
+      {
+        fprintf (stdout, "\n#i.FFB2/%04dB:", rlen);
+        for (int i = 0; i < rlen; i++)
+          fprintf (stdout, " %02x", report[i]);
+        if (1)
+          ff_lg_decode_command ((const unsigned char *)ffbdata);
+      }
       //uses almost identical message format as Logitech
       if(ffbdata[0] != FF_LG_CMD_EXTENDED_COMMAND)
       {
@@ -1720,8 +1829,24 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
               //should align/reset the platform now
               printf("\n#w:reset platform on %s", ff_lg_get_cmd_name(cmd));
               pf_roll = 0;
-              rollp = 0;
+              pf_rollp = 0;
               pf_rolld = 0;
+              pfhr = 0;     //low res positioning
+              printf (" - LOW resolution wheel pos");
+              //reset dash data
+              if (_dashaddr)
+              {
+                revsk = 0;
+                revsk2 = 0;
+                cgear = 0;
+                csped = 0;
+                //
+                _dpkt[MFC_DIRPM]  = -revsk * 1000;  //rpm - not real ones, use negative values
+                _dpkt[MFC_DIRPMM] = -9000;          //max rpm for 9 leds
+                //speed and gears
+                _dpkt[MFC_DIGEAR] = cgear;
+                _dpkt[MFC_DISPD] = csped;
+              }
             }
             else
             {
@@ -1733,7 +1858,7 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
                 case FF_LG_FTYPE_CONSTANT:
                 {
                   //whlpos = force->parameters[0];
-                  if (0||_odbg) printf ("\n#unused CONSTANT %02x %02x %02x %02x %02x", force->parameters[0], force->parameters[1], force->parameters[2], force->parameters[3], force->parameters[4]);
+                  if (0|_odbg) printf ("\n#unused CONSTANT %02x %02x %02x %02x %02x", force->parameters[0], force->parameters[1], force->parameters[2], force->parameters[3], force->parameters[4]);
                   break;
                 }
                 case FF_LG_FTYPE_VARIABLE:
@@ -1741,34 +1866,122 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
                   //whlpos = force->parameters[1] * 255 + force->parameters[2]; //max precision
                   //platform roll is given by this value: left> FF..80,7F..00 <right
                   //80 and 7F are used for 0 roll - use only ~80% of the range for more immersiveness?!
-                  if (0||_odbg) printf ("\n#VARIABLE %02x %02x %02x %02x %02x", force->parameters[0], force->parameters[1], force->parameters[2], force->parameters[3], force->parameters[4]);
+                  if (0||_odbg)
+                    printf ("\n#FFB@%.3f:VARIABLE %02x %02x %02x %02x %02x", get_fms(),
+                      force->parameters[0], force->parameters[1], force->parameters[2], force->parameters[3], force->parameters[4]);
                   //pf_roll = get_cmap(force->parameters[0], 0xff, 0x00, -128, 128);
-                  if (force->parameters[1])//GT Sport uses finer control on 2 bytes
-                    pf_roll = get_cmap((long)force->parameters[1], (long)0xe0, (long)0x20, -128, 128);
-                  else  //classic control on 1 byte
-                    pf_roll = get_cmap((long)force->parameters[0], (long)0xe0, (long)0x20, -128, 128);
-                  pf_rolld = pf_roll - rollp;
-                  rollp = pf_roll;  //reset prev roll
+                  //static int wpos, lwpos = 0;
+                  if (pfhr == 0) //low res pos
+                  {
+                    if (force->parameters[1] != 0)
+                    {
+                      pfhr = 1;
+                      printf ("\n#i.HIGH resolution wheel pos");
+                    }
+                    else
+                    {
+                      //LOW res here..
+                      //map 0..255 to 0..65535 or -127..127 to -32768..32768
+                      pf_roll = get_cmap((long)force->parameters[0], (long)0xf0, (long)0x10, MFC_WHL_MIN, MFC_WHL_MAX);
+                      //traction loss component
+                      #if 0
+                      if (pf_damper < 3)
+                      {
+                        pf_trlossd = force->parameters[0]?(pf_trlossp - force->parameters[0]):0;
+                        pf_trlossp = force->parameters[0];
+                        if (abs(pf_trlossd) == 1)
+                        {
+                          //we have traction loss
+                          pp_trloss = 127 - pf_trlossp;
+                          if (1)
+                          {
+                            printf ("\n#i@%.3f:LOW res trloss %5d > delta %5d", get_fms(), 127 - pf_trlossp, pf_trlossd);
+                            //printf ("\n#i@%.3f:LOW res trloss %5d OFF", get_fms(), pf_trlossd);
+                          }
+                        }
+                      }
+                      #endif
+                    }
+                  }
+                  if (pfhr == 1) //high res pos
+                  {
+                    //we have 2 byte positioning here
+                    pf_roll = MFC_WHL_MAX - (force->parameters[1] << 8 | force->parameters[0]);
+                    //pf_roll = get_cmap((long)(force->parameters[1] << 8 | force->parameters[0]), (long)0, (long)65535, -MFC_WHL_MAX, MFC_WHL_MAX);
+                    //traction loss component
+                    #if 0
+                    if (pf_damper < 3)
+                    {
+                      pf_trlossd = pf_roll?(pf_trlossp - pf_roll):0;
+                      pf_trlossp = pf_roll;
+                      if (abs(pf_trlossd) < 5)
+                      {
+                        //we have traction loss
+                        pp_trloss = get_cmap((long)pf_trlossp, MFC_WHL_MIN, MFC_WHL_MAX, MFC_BYTE_MIN, MFC_BYTE_MAX);
+                        if (1)
+                        {
+                          printf ("\n#i@%.3f:HIGH res trloss %5d > delta %5d", get_fms(), pf_trlossp, pf_trlossd);
+                        }
+                      }
+                    }
+                    #endif
+                  }
                   //
-                  if (0||_odbg) printf ("\n#d.ffb roll %02x > %d delta %d prev %d",
-                    force->parameters[1]?force->parameters[1]:force->parameters[0], pf_roll, pf_rolld, rollp);
+                  //pf_rolld = lwpos?lwpos - wpos:0;
+                  pf_rolld = pf_roll?(pf_roll - pf_rollp):0;
+                  pf_rollp = pf_roll;  //reset prev roll
+                  if (0 || _odbg)
+                    printf ("\n#i@%.3f: %s res whl pos %5d > %5d delta %6d", get_fms(),
+                      pfhr?"HIGH":"LOW", pf_roll, 
+                      pfhr?(force->parameters[1] << 8 | force->parameters[0]):force->parameters[0], pf_rolld);
+                  //traction loss component
+                  if (pf_damper < 3)
+                  {
+                    if (0 || _odbg)
+                      printf ("\n#i@%.3f: %s res whl pos %5d > %5d delta %6d", get_fms(),
+                        pfhr?"HIGH":"LOW", pf_roll, pfhr?(force->parameters[1] << 8 | force->parameters[0]):force->parameters[0], pf_rolld);
+                    if (abs(pf_rolld) < 500 && pf_rolld)
+                    {
+                      //we have traction loss
+                      pp_trloss = pf_roll;
+                      if (0)
+                      {
+                        printf ("\n#i@%.3f:%s res trloss %5d > delta %5d", 
+                          get_fms(), pfhr?"HIGH":"LOW", pp_trloss, pf_rolld);
+                        //printf ("\n#i@%.3f:LOW res trloss %5d OFF", get_fms(), pf_trlossd);
+                      }
+                    }
+                  }
+                  #if 0
+                  if (force->parameters[1])//GT Sport uses finer control on 2 bytes
+                  {
+                    pf_roll = get_cmap((long)force->parameters[1], (long)0xe0, (long)0x20, -128, 128);
+                  }
+                  else  //classic control on 1 byte
+                  {
+                    pf_roll = get_cmap((long)force->parameters[0], (long)0xe0, (long)0x20, -128, 128);
+                  }
+                  #endif
+                  //
                   break;
                 }
                 case FF_LG_FTYPE_SPRING:
                 case FF_LG_FTYPE_HIGH_RESOLUTION_SPRING:
                 {
-                  if (0||_odbg) printf ("\n#unused SPRING %02x %02x %02x %02x %02x", force->parameters[0], force->parameters[1], force->parameters[2], force->parameters[3], force->parameters[4]);
+                  if (1||_odbg) printf ("\n#unused SPRING %02x %02x %02x %02x %02x", force->parameters[0], force->parameters[1], force->parameters[2], force->parameters[3], force->parameters[4]);
                   break;
                 }
                 case FF_LG_FTYPE_DAMPER:
                 case FF_LG_FTYPE_HIGH_RESOLUTION_DAMPER:
                 {
-                  if (0||_odbg) printf ("\n#unused DAMPER %02x %02x %02x %02x %02x", force->parameters[0], force->parameters[1], force->parameters[2], force->parameters[3], force->parameters[4]);
+                  //if (1||_odbg) printf ("\n#unused DAMPER %02x %02x %02x %02x %02x", force->parameters[0], force->parameters[1], force->parameters[2], force->parameters[3], force->parameters[4]);
+                  //if (1||_odbg) dump_ffb(5, report, rlen);
+                  pf_damper = force->parameters[0];
                   break;
                 }
                 default:
                 {
-                  if (0||_odbg)printf ("\n#w:skip force type: %s", ff_lg_get_ftype_name(force->force_type));
+                  if (1||_odbg)printf ("\n#w:skip force type: %s", ff_lg_get_ftype_name(force->force_type));
                 }
               }//force type
             }//command
@@ -1782,17 +1995,21 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
               printf("\n#w:");
               ff_lg_decode_command ((const unsigned char *)ffbdata);
             }
-            if (0||_odbg) printf("\n#w:skip SPRING command %s", ff_lg_get_cmd_name(cmd));
+            if (1||_odbg) printf("\n#w:skip SPRING command %s", ff_lg_get_cmd_name(cmd));
             break;
           }
           default:
           {
-            if (_odbg) printf("\n#w:skipping unsupported command %s", ff_lg_get_cmd_name(cmd));
+            if (1||_odbg) printf("\n#w:skipping unsupported command %s", ff_lg_get_cmd_name(cmd));
           }
         }//cmd
       }
       else    //extended command
       {
+        if (0) {
+          tslog_printf("i:FFB.");
+          ff_lg_decode_command ((const unsigned char *)ffbdata);
+        }
         switch(ffbdata[1])
         {
           case FF_FT_EXT_CMD_RPM_LEDS:
@@ -1801,7 +2018,8 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
             //revs = count_ones(report[6]) + (report[7] & 0x01);
             revsk = count_ones(leds->parameters[0]);
             revsk += count_ones(leds->parameters[1] & 0x01);
-            if (_odbg) printf ("\n#d.rev2 level %d %02x %02x %02x %02x", revsk, leds->parameters[0], leds->parameters[1], leds->parameters[2], leds->parameters[3]);
+            if (0 /*revsk == 9*/ || _odbg)
+              printf ("\n#d.rev2 level %d %02x %02x %02x %02x", revsk, leds->parameters[0], leds->parameters[1], leds->parameters[2], leds->parameters[3]);
             if (_dashaddr)
             {
               //compute revs data based on revs leds - 9 leds in total, don't care about accuracy
@@ -1845,6 +2063,15 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
                   if (dgts[2] != ' ') //GT Sport style
                     //this should be the speed since the gear are normally in the middle digit
                     csped = ddat;
+                  else
+                  {
+                    if (dgts[0] == 'r')
+                      cgear = -1;
+                    else if (dgts[0] == 'n')
+                      cgear = 0;
+                    else
+                      cgear = ddat;
+                  }
                 }
                 //speed and gears
                 _dpkt[MFC_DIGEAR] = cgear;
@@ -1874,6 +2101,31 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
 #d.digits/led 08 01 00 00 00 00
 #d.digits/led 08 00 00 00 00 00.
               */
+                //do we have wheel LEDs control message? like DD GT 3 LEDs panel
+                if (leds->parameters[0] == 0x08)
+                {
+                  if (leds->parameters[2] == 0x00)
+                    revsk2 = 0;
+                  if (leds->parameters[1] == 0x01)
+                  {
+                    if (leds->parameters[2] & 0x80) //orange - low
+                      revsk2 = 3;
+                    if (leds->parameters[2] & 0x10) //red - medium
+                      revsk2 = 6;
+                    if (leds->parameters[2] & 0x02) //blue - high
+                      revsk2 = 9;
+                  }
+                  pw_revs = revsk2;
+                  if (0 || _odbg)
+                    printf ("\n#d.LEDs lvl2 %d %02x %02x %02x %02x", revsk2, leds->parameters[0], leds->parameters[1], leds->parameters[2], leds->parameters[3]);
+                  //update dash data
+                  if (1 || _dashaddr)
+                  {
+                    //compute revs data based on revs leds - 9 leds in total, don't care about accuracy
+                    _dpkt[MFC_DIRPM]  = -revsk2 * 1000;  //rpm - not real ones, use negative values
+                    _dpkt[MFC_DIRPMM] = -9000;         //max rpm for 9 leds
+                  }
+                }
               //printf ("\n#d.digits/led %02x %02x %02x %02x %02x %02x", leds->parameters[0], leds->parameters[1], leds->parameters[2], leds->parameters[3], leds->parameters[4], leds->parameters[5]);
               }
             } //_dashaddr
@@ -1881,7 +2133,7 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
           }
           default:
           {
-            if (_odbg) printf("\n#w:skip ext command %s", ff_lg_get_ext_cmd_name(ffbdata[1]));
+            if (1||_odbg) printf("\n#w:skip ext command %s", ff_lg_get_ext_cmd_name(ffbdata[1]));
           }
         }
         //process rev leds
@@ -1937,7 +2189,7 @@ ff ff ff ff ff 00 ff ff 00 00
       _wd = 'W';      //
       //get accel/brake
       report++; //skip extra byte due to header length
-      if (0)
+      if (_odbg)
       {
         fprintf (stdout, "\n#i.WHL2@%04d:", rlen);
         for (int i = 0; i < rlen; i++)
@@ -1961,6 +2213,13 @@ ff ff ff ff ff 00 ff ff 00 00
       if (_odbg > 2)
         printf ("\n#RAW whl %d acc %d brk %d", pw_roll, lpacc, lpbrk);
       //
+      if (0 /* lpbrk != 0 */)
+      {
+        fprintf (stdout, "\n#i.WHL2@%04d:", rlen);
+        for (int i = 0; i < rlen; i++)
+          fprintf (stdout, " %02x", report[i]);
+        printf (" RAW whl %d acc %d brk %d", pw_roll, lpacc, lpbrk);
+      }
       pw_acc = lpacc; pw_brk = lpbrk; pw_revs = revsk;
       //pw_pitch = accel_pitch_get(lpacc, lpbrk, revsk);
       //gear shifting: only when accelerating or braking
