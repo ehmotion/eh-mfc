@@ -14,7 +14,7 @@ the next thing it does, it uses the USB HID data exchanged between the steering 
 
 - Thrustmaster T300RS for PS4/PS5
 - Logitech G92 for PS4/PS5
-- Fanatec Elite CSL for PS4/PS5
+- Fanatec CSL DD/Elite for PS4/PS5
 
 # how this works
 
