@@ -4,7 +4,7 @@ adapted from https://github.com/lmirel/mfc
 
 this tool uses the native in-game telemetry shared via UDP/TCP from games to control a motion platform.<br>
 the following games are supported so far:
-
+- EA WRC (PS5) https://youtu.be/CMydpGEVmhE?si=rpI5bIRiBKAgmEds
 - Assetto Corsa (PS4/PS5/PC)<br>
 - Codemaster's Dirt Rally 2 (PC)<br>
 - Project Cars 2 (PS4/PS5/PC)
