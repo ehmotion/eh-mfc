@@ -800,6 +800,11 @@ int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
     _cpkt[MFC_PITLOSS] = (int)(dof_tloss * DOF_MAG);
     _cpkt[MFC_PITLOSS] = mfc_ewmaf(MFC_PITLOSS, _cpkt[MFC_PITLOSS], 0.1);
     //
+    if (0 || _odbg)
+      printf ("\n%.3f, %5d, %5d, %5d, %5d, %5d, %5d, %5d", cltime,
+        _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
+        _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
+        _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
     if (_learn)
     {
       char _newrange = 0;

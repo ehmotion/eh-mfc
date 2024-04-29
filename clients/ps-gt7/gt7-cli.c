@@ -644,11 +644,39 @@ int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
         dt, tpkt->rorin, tpkt->vx, tpkt->vy, tpkt->vz, tpkt->mps);
     dt = 0;
   }
-  if (0 &&  !(tpkt->flags & 0x2))
-    printf ("\n#i:pkt:%04x / %d rpm %f gear %02x spd %f rpy %f %f %f",
-      tpkt->flags, tpkt->spos, tpkt->rpm, tpkt->gear&0xf, tpkt->mps * 3.6f, tpkt->ax, tpkt->ay, tpkt->az);
+  /*
+-game menu
+#i:pkt:0x0000 / 65535 rpm 7350.000000 gear 07 spd 302.793823 rpy -0.006580 0.016017 -0.030721
+-loading
+#i:pkt:0x0198 / 1 rpm 5941.000000 gear 05 spd 188.704025 rpy 0.109757 0.088692 0.047300
+-race menu
+#i:pkt:0x01b8 / 1 rpm 7329.000000 gear 07 spd 301.951691 rpy 0.062090 0.035818 0.165117
+#i:pkt@115.196/0.018 0x0098 / 20 rpm 7185.000000 gear 05 spd 165.724808 rpy -0.025166 -0.048868 -0.007500
+#i:pkt@5.994/0.017 0x00b8 / 20 rpm 7614.000000 gear 04 spd 141.511597 rpy -0.007178 -0.295699 0.080580
+-race countdown
+#i:pkt:0x019b / 65535 rpm 5560.000000 gear 04 spd 155.562698 rpy 0.070308 -0.026675 0.156877
+-racing
+#i:pkt:0x0199 / 65535 rpm 3228.000000 gear 04 spd 92.303497 rpy 0.067701 0.016735 0.014449
+#i:pkt@239.942/0.017 0x0189 / 65535 rpm 5230.000000 gear 04 spd 229.976669 rpy 0.011394 0.015060 0.028492
+#i:pkt@71.751/0.018 0x0009 / 65535 rpm 3293.000000 gear 01 spd 2.500520 rpy -0.073604 0.474158 -0.536907
+-pits
+#i:pkt@112.920/0.016 0x0091 / 65535 rpm 1023.000000 gear 01 spd 0.000000 rpy -0.000000 0.000039 -0.000004
+-replay
+#i:pkt@13.338/0.017 0x0008 / 65535 rpm 8148.541504 gear 01 spd 117.605621 rpy 0.012991 -0.495956 -0.033759
+
+  */
+  if (1 ||  !(tpkt->flags & 0x2))
+    printf ("\n#i:pkt@%.3f/%.3f 0x%04x / %d rpm %f gear %02x spd %f rpy %f %f %f",
+      cltime, dt, tpkt->flags, tpkt->spos, tpkt->rpm, tpkt->gear&0xf, tpkt->mps * 3.6f, tpkt->ax, tpkt->ay, tpkt->az);
   //
-  if(!(tpkt->flags & 0x0006) && (tpkt->flags & 0x0001) && dt) // exclude motion during replay or menu
+  #define is_set_bit(a, b) ((a&0xf)&(1<<b))
+  #define bit_set(a, b) ((a&0xf)&(b))
+  #define gt7_running 0x8 //also on replay
+  #define gt7_racing  0x1 //only when driving
+  #define gt7_autorun 0x2 //auto drive, no control
+  #define gt7_race_running(flg) (bit_set(flg, 0x08) && bit_set(flg, 0x01) && !bit_set(flg, 0x02))
+  //if(!(tpkt->flags & 0x0006) && (tpkt->flags & 0x0001) && dt) // exclude motion during replay or menu
+  if(/*dt && */gt7_race_running(tpkt->flags)) // exclude motion during replay or menu
   {
     /*
     // https://stackoverflow.com/questions/20615962/2d-world-velocity-to-2d-local-velocity
@@ -695,6 +723,7 @@ int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
             print("G-Forces:",G)
             Vp = Vl # save current local velocity for next packet
     */
+   // https://www.gtplanet.net/forum/threads/gt7-is-compatible-with-motion-rig.410728/post-13829730
     V[0] = tpkt->vx; V[1] = tpkt->vy; V[2] = tpkt->vz;
     Q[0] = tpkt->rx; Q[1] = tpkt->ry; Q[2] = tpkt->rz; Q[3] = tpkt->rorin;
     float *Qc = quat_conj(Q);
@@ -749,21 +778,21 @@ int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
         for (int i = MFC_PITDAT + 1; i < MFC_PKTSIZE; ++i)
           printf ("\n#E:%d# [%d.. %d ..%d]", i, mpkt[i], _cpkt[i], Mpkt[i]);
     }
-    if (1 || _odbg)
+    if (0 || _odbg)
       printf ("\n#i@%.3f.t1 pitch%% %5d %5d %5d roll%% %5d %5d yaw%% %5d %5d", cltime,
         _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
         _cpkt[MFC_PIROLL], _cpkt[MFC_PISWAY], 
         _cpkt[MFC_PIYAW], _cpkt[MFC_PITLOSS]);
     //pitch
-    _cpkt[MFC_PIPITCH] = get_cmap_f (_cpkt[MFC_PIPITCH], mpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH], -MFC_HPOS_MAX, MFC_HPOS_MAX);
-    _cpkt[MFC_PISURGE] = get_cmap_f (_cpkt[MFC_PISURGE], mpkt[MFC_PISURGE], Mpkt[MFC_PISURGE], -MFC_HPOS_MAX, MFC_HPOS_MAX);
-    _cpkt[MFC_PIHEAVE] = get_cmap_f(_cpkt[MFC_PIHEAVE], mpkt[MFC_PIHEAVE], Mpkt[MFC_PIHEAVE], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+    _cpkt[MFC_PIPITCH] = get_cmap_f (_cpkt[MFC_PIPITCH], mpkt[MFC_PIPITCH], Mpkt[MFC_PIPITCH], MFC_POS_MIN, MFC_HPOS_MAX);
+    _cpkt[MFC_PISURGE] = get_cmap_f (_cpkt[MFC_PISURGE], mpkt[MFC_PISURGE], Mpkt[MFC_PISURGE], MFC_POS_MIN, MFC_HPOS_MAX);
+    _cpkt[MFC_PIHEAVE] = get_cmap_f(_cpkt[MFC_PIHEAVE], mpkt[MFC_PIHEAVE], Mpkt[MFC_PIHEAVE], MFC_POS_MIN, MFC_HPOS_MAX);
     //roll
-    _cpkt[MFC_PIROLL]  = get_cmap_f (_cpkt[MFC_PIROLL],  mpkt[MFC_PIROLL],  Mpkt[MFC_PIROLL], -MFC_HPOS_MAX, MFC_HPOS_MAX);
-    _cpkt[MFC_PISWAY]  = get_cmap_f (_cpkt[MFC_PISWAY],  mpkt[MFC_PISWAY],  Mpkt[MFC_PISWAY], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+    _cpkt[MFC_PIROLL]  = get_cmap_f (_cpkt[MFC_PIROLL],  mpkt[MFC_PIROLL],  Mpkt[MFC_PIROLL], MFC_POS_MIN, MFC_HPOS_MAX);
+    _cpkt[MFC_PISWAY]  = get_cmap_f (_cpkt[MFC_PISWAY],  mpkt[MFC_PISWAY],  Mpkt[MFC_PISWAY], MFC_POS_MIN, MFC_HPOS_MAX);
     //yaw
-    _cpkt[MFC_PIYAW]   = get_cmap_f (_cpkt[MFC_PIYAW],   mpkt[MFC_PIYAW],   Mpkt[MFC_PIYAW], -MFC_HPOS_MAX, MFC_HPOS_MAX);
-    _cpkt[MFC_PITLOSS] = get_cmap_f (_cpkt[MFC_PITLOSS], mpkt[MFC_PITLOSS], Mpkt[MFC_PITLOSS], -MFC_HPOS_MAX, MFC_HPOS_MAX);
+    _cpkt[MFC_PIYAW]   = get_cmap_f (_cpkt[MFC_PIYAW],   mpkt[MFC_PIYAW],   Mpkt[MFC_PIYAW], MFC_POS_MIN, MFC_HPOS_MAX);
+    _cpkt[MFC_PITLOSS] = get_cmap_f (_cpkt[MFC_PITLOSS], mpkt[MFC_PITLOSS], Mpkt[MFC_PITLOSS], MFC_POS_MIN, MFC_HPOS_MAX);
     if (0 || _odbg)
       printf ("\n#i@%.3f.t2 pitch%% %d %d %d roll%% %d %d yaw%% %d %d", cltime,
         _cpkt[MFC_PIPITCH], _cpkt[MFC_PISURGE], _cpkt[MFC_PIHEAVE],
@@ -790,8 +819,15 @@ int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
   }
   else
   {
+    //park platform
+    if (0 && !_learn)
+    {
+      goto_park(_cpkt);
+      mfc_bcast_send ();
+    }
     //don't process these packets
-    printf ("\n#i:drop pkt:%04x / %d rpm %f gear %02x spd %f rpy %f %f %f",
+    if (0)
+      printf ("\n#i:drop pkt:%04x / %d rpm %f gear %02x spd %f rpy %f %f %f",
       tpkt->flags, tpkt->spos, (float)tpkt->rpm, tpkt->gear&0xf, tpkt->mps * 3.6f, tpkt->ax, tpkt->ay, tpkt->az);
   }
   //send dash data even when learning
@@ -802,7 +838,8 @@ int mfc_packet_use(char* packetBuffer, float rtime, float cltime)
     _dpkt[MFC_DIGEAR] = (int)tpkt->gear & 0xf;  //gear
     _dpkt[MFC_DIRPM]  = (int)tpkt->rpm;  //rpm x10
     _dpkt[MFC_DIRPMM] = (int)tpkt->Mrpm; //max rpm x10
-    printf ("\n#i@%.3f:d1 rpm %d rpmm %d rpmM %d", cltime, _dpkt[MFC_DIRPM], _dpkt[MFC_DIRPMM], tpkt->Mrpm);
+    if (0)
+      printf ("\n#i@%.3f:d1 rpm %d rpmm %d rpmM %d", cltime, _dpkt[MFC_DIRPM], _dpkt[MFC_DIRPMM], tpkt->Mrpm);
     memcpy(_dpkt, _cpkt, pktl);
     mfcdash_bcast_send ();
   }

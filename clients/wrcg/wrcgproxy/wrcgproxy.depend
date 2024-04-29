@@ -1,0 +1,5 @@
+# depslib dependency file v1.0
+1671102255 source:m:\wrcg\wrcgproxy\main.c
+	<stdio.h>
+	<winsock2.h>
+
