@@ -4,7 +4,7 @@ adapted from https://github.com/lmirel/mfc
 
 this tool uses the native in-game telemetry shared via UDP/TCP from games to control a motion platform.<br>
 the following games are supported so far:
-- EA WRC (PS5) https://youtu.be/CMydpGEVmhE?si=rpI5bIRiBKAgmEds
+- EA WRC (PS5) <a href="https://youtu.be/CMydpGEVmhE?si=rpI5bIRiBKAgmEds>see video</a>
 - Assetto Corsa (PS4/PS5/PC)<br>
 - Codemaster's Dirt Rally 2 (PC)<br>
 - Project Cars 2 (PS4/PS5/PC)
@@ -14,16 +14,18 @@ the next thing it does, it uses the USB HID data exchanged between the steering 
 
 - Thrustmaster T300RS for PS4/PS5
 - Logitech G92 for PS4/PS5
-- Fanatec CSL DD/Elite for PS4/PS5
+- Fanatec CSL DD/Elite for PS4/PS5 - best supported, last updated
 
 # how this works
 
 the MFC SERVER controls the motion platform drivers.<br>
 the MFC CLIENTS are programs that receive native telemetry data and sends it to the server (see list of games above).<br>
-the USB XTRACTOR is used to proxy between the steering wheel and the console to extract USB HID data.<br>
+the USB PROXY is used to proxy between the steering wheel and the console to extract USB HID data (requires additonal unexpensive hardware, check subfolder).<br>
 the MFC XTRACTOR uses the USB HID data to generate game telemetry.<br>
-the two extractors are only needed if the games you play don't provide in-game telemetry via UDP/TCP. the USBXTRACTOR also requires an Arduino/Teensy atmega32u4 with custom firmware. this solution is based on Matlo's https://github.com/matlo/serialusb<br>
+the two extractors are only needed if the games you play don't provide in-game telemetry via UDP/TCP.<br>
+- the USB XTRACTOR is not used lately, in favor of the faster more reliable USB PROXY.
 <br>
+
 the end result using the xtractors on a PS4 system looks something like this:<br>
 [side view](https://www.youtube.com/watch?v=uBPW2BS_ysU&t=1s) and [back view](https://www.youtube.com/watch?v=jvZpMXiD8k4&t=1s)
 
@@ -31,6 +33,6 @@ the end result using the xtractors on a PS4 system looks something like this:<br
 
 - <a href="https://github.com/ehmotion/eh-mfc/wiki">Wiki</a>
 
-<br>Tested on a system using Raspberry PI2/3.
+<br>Tested on a system using Raspberry 3.
 <br><br>
 USE AT YOUR OWN RISK and Enjoy!
