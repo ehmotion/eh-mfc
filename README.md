@@ -3,19 +3,20 @@ adapted from https://github.com/lmirel/mfc
 # mfc - motion feedback controller
 
 this tool uses the native in-game telemetry shared via UDP/TCP from games to control a motion platform.<br>
-the following games are supported so far:
-- EA WRC (PS5) [see for yourself](https://youtu.be/CMydpGEVmhE?si=rpI5bIRiBKAgmEds)
+the following games are supported so far (see clients folder):
+- EA WRC (PS5 via USB Proxy) [see for yourself](https://youtu.be/CMydpGEVmhE?si=rpI5bIRiBKAgmEds)<br>
+- WRC Generations (PC via its own proxy due to silly local implementation on PC)<br>
 - Assetto Corsa (PS4/PS5/PC)<br>
-- Codemaster's Dirt Rally 2 (PC)<br>
-- Project Cars 2 (PS4/PS5/PC)
-- GT7 (PS5) [see here](https://youtu.be/65xT8-NaRr0)
+- Codemaster's Dirt Rally 2 (PC and PS4/5 via USB Proxy)<br>
+- Project Cars 2 (PS4/PS5/PC)<br>
+- GT7 (PS5) [see here](https://youtu.be/65xT8-NaRr0)<br>
 <br>
 the next thing it does, it uses the USB HID data exchanged between the steering wheel and the gaming console to 'guesstimate' how a motion platform SHOULD move as if it had telemetry available. it does its best and most of the times it manages well. keep in mind however that it guesses that and it relies heavily on the FFB and wheel data to do it.
 <br>supported wheels so far:
 
-- Thrustmaster T300RS for PS4/PS5
+- Fanatec CSL DD/Elite for PS4/PS5 - best supported
 - Logitech G92 for PS4/PS5
-- Fanatec CSL DD/Elite for PS4/PS5 - best supported, last updated
+- Thrustmaster T300RS for PS4/PS5
 
 # how this works
 
