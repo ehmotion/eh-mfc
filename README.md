@@ -21,11 +21,11 @@ the next thing it does, it uses the USB HID data exchanged between the steering 
 # how this works
 
 the MFC SERVER controls the motion platform drivers.<br>
-the MFC CLIENTS are programs that receive native telemetry data and sends it to the server (see list of games above).<br>
+the MFC CLIENTS are programs that receive native telemetry data and sends it to the server (see clients folder for a list of games).<br>
 the USB PROXY is used to proxy between the steering wheel and the console to extract USB HID data (requires additonal unexpensive hardware, check subfolder).<br>
 the MFC XTRACTOR uses the USB HID data to generate game telemetry.<br>
 the two extractors are only needed if the games you play don't provide in-game telemetry via UDP/TCP.<br>
-- the USB XTRACTOR is not used lately, in favor of the faster more reliable USB PROXY.
+note: the USB XTRACTOR is not used lately in favor of the faster more reliable USB PROXY.
 <br>
 
 the end result using the xtractors on a PS4 system looks something like this:<br>
