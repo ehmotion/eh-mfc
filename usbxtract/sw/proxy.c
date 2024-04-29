@@ -592,6 +592,7 @@ void fix_endpoints()
               //printf(KRED" -> %hu"KNRM, endpointNumber);
               printf(" -> %hu", endpointNumber);
             }
+            printf(" intv %dms pkt %dB", endpoint->bInterval, endpoint->wMaxPacketSize);
           }
           if ((originalEndpoint & USB_ENDPOINT_NUMBER_MASK) == 0) 
           {

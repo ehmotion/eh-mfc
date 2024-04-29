@@ -116,6 +116,38 @@ struct ip_mreq
                                                 interface */
   int imr_ifindex;              /* interface index */
 };
+
+int goto_park(int *pkt)
+{
+  for(int i = MFC_PIPITCH; i <= MFC_PITLOSS; i++)
+  {
+    if (pkt[i] != 0)
+      pkt[i] -= pkt[i]/10;
+    //if (pkt[i] < 0)
+    //  pkt[i] ;
+  }
+  return 1;
+}
+
+int goto_ramp(int *pkt, char flg)
+{
+  static int prc = 0;
+  if (flg && prc == 100)
+    return 0;
+  if (flg)
+    prc += 3;
+  else
+    prc = 0;
+  if (prc >= 100)
+    prc = 100;
+  for(int i = MFC_PIPITCH; i <= MFC_PITLOSS; i++)
+  {
+    //printf("\n#ramping to %.3f", ((float)prc)/100.f);
+    pkt[i] = pkt[i] * ((float)prc)/100.f;
+  }
+  return 1;
+}
+
 //
 int mfc_bcast_prep (char *dst, int svr)
 {

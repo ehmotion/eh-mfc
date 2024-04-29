@@ -151,7 +151,7 @@ static int client_send (n_packet *packet, char in)
     }
   }
   //
-  if (0 && packet->header.type != E_TYPE_IN)// || packet->header.length != 65)
+  if (1 || adapterDbg & 0x0f)// || packet->header.length != 65)
   {
     int i;
     printf ("\n#PKT@%.3f%s%3dB/0x%02x/%s:", get_fms(), in?">":"<", packet->header.length, packet->header.type, npktst[packet->header.type]);

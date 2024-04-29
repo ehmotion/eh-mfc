@@ -181,6 +181,7 @@ static int _cpktl = 0;
 static int *_dpkt = NULL;
 
 float mfc_intensity = 15.0f / 100.0f; //20% default intensity
+#if 0
 int mfc_fltoutpos[MFC_PKTSIZE];
 //Exponentially Weighted Moving Average filter
 int mfc_ewmaf(int dof, int input, float wi)
@@ -190,7 +191,7 @@ int mfc_ewmaf(int dof, int input, float wi)
   mfc_fltoutpos[dof] = (int)(wi * (float)(input - mfc_fltoutpos[dof])) + mfc_fltoutpos[dof];
   return mfc_fltoutpos[dof];
 }
-
+#endif
 static void usage()
 {
   printf ("usage: sudo mfcxtract\n\n");
@@ -736,8 +737,8 @@ int main (int argc, char **argv, char **envp)
       //mpktt++;
       //send the packet if we get data from the extractor
       //let's hope we get some messages in the mean time
-      // otherwise only send a packet every once in a while
-      if (!tmonet || tmoknt == 0)
+      // (no more -> otherwise only send a packet every once in a while)
+      if (!tmonet /*|| tmoknt == 0*/)
       {
         //_cpkt[MFC_PISPEED] = ms_now;  //hide the timestamp here, for future ref
         mfc_bcast_send ();
@@ -960,9 +961,9 @@ YAW	Yaw is the heading of the car (north, east, south, west) in [°]         //c
   //pedals-based pitch
   _cpkt[MFC_PIPITCH] = -get_cmap (pw_pitch, MFC_WHL_MIN, MFC_WHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
   //gear changes
-  _cpkt[MFC_PISURGE] = -get_cmap (pf_pitch, -100, 100, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  _cpkt[MFC_PISURGE] = -get_cmap (pf_pitch, -100, 100, MFC_POS_MIN, MFC_POS_MAX);
   //revs jolt, others, pv_pitch
-  _cpkt[MFC_PIHEAVE] = -get_cmap (pv_pitch, MFC_BYTE_MIN, MFC_BYTE_MAX, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  _cpkt[MFC_PIHEAVE] = -get_cmap (pv_pitch, MFC_BYTE_MIN, MFC_BYTE_MAX, MFC_POS_MIN, MFC_POS_MAX);
   //>ROLL
   //ffb roll
   //if (_toyfd > 0)
@@ -978,10 +979,10 @@ YAW	Yaw is the heading of the car (north, east, south, west) in [°]         //c
   //force feedback input for sway
   //lpw_roll = get_cmap (pw_roll, -MFC_HWHL_MAX/2, MFC_HWHL_MAX/2, -MFC_HPOS_MAX/2, MFC_HPOS_MAX/2);
   //_cpkt[MFC_PISWAY]  = get_cmap (pf_roll, -128, 128, MFC_POS_MIN, MFC_POS_MAX);
-  _cpkt[MFC_PISWAY]  = get_cmap (pf_rolld, MFC_HWHL_MIN, MFC_HWHL_MAX, MFC_HPOS_MIN, MFC_HPOS_MAX);
+  _cpkt[MFC_PISWAY]  = get_cmap (pf_rolld, MFC_HWHL_MIN, MFC_HWHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
   //>YAW
   //steering direction
-  _cpkt[MFC_PIYAW] = get_cmap (pf_roll, -MFC_WHL_MAX, MFC_WHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
+  _cpkt[MFC_PIYAW] = get_cmap (pw_roll, MFC_HWHL_MIN, MFC_HWHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
   //_cpkt[MFC_PIYAW]  = get_cmap (pw_roll, MFC_QWHL_MIN, MFC_QWHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
   //trloss
   _cpkt[MFC_PITLOSS] = get_cmap (pp_trloss, MFC_WHL_MIN, MFC_WHL_MAX, MFC_POS_MIN, MFC_POS_MAX);
@@ -1758,7 +1759,7 @@ int motion_process_fanatec (char *report, int rlen, unsigned long dtime)
   {
     max_revs = ~max_revs;
     if (max_revs)
-      pv_pitch = pf_shiftspd/2;
+      pv_pitch = pf_shiftspd/4;
     else
       pv_pitch = 0;
     //printf("\n#i@%.3f:pv_pitch %d", get_fms(), pv_pitch);

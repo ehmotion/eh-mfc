@@ -168,6 +168,11 @@ void bcast_prep ();
 void bcast_send ();
 void bcast_close ();
 
+//gradually move to park
+int goto_park(int *pkt);
+//gradually ramp to the current pos based on prc weight (to 100%)
+int goto_ramp(int *pkt, char flg);
+
 int s7led_connect(char* portname);
 int s7led_close();
 /*
